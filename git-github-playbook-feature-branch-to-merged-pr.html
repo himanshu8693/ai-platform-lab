@@ -1,0 +1,546 @@
+
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Git &amp; GitHub Playbook</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #1f2328;
+    background: #ffffff;
+    padding: 32px 20px 60px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; color: #1f2328; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #57606a; margin-bottom: 32px; }
+  h2 { font-size: 15px; font-weight: 700; color: #1f2328; margin: 32px 0 10px;
+       padding: 6px 12px; background: #f7f8fa; border-left: 3px solid #3b82d4;
+       border-radius: 0 4px 4px 0; }
+  h3 { font-size: 13.5px; font-weight: 600; color: #1f2328; margin: 18px 0 6px; }
+  p { margin-bottom: 12px; color: #1f2328; }
+  ul, ol { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+  pre {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12.5px;
+    background: #1b1f24;
+    color: #e6edf3;
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 8px 0 14px;
+    line-height: 1.55;
+    white-space: pre;
+  }
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    background: #f7f8fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .comment { color: #8b949e; }
+  .cmd-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #57606a;
+    margin-bottom: 3px;
+    margin-top: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 14px; }
+  thead th { background: #f7f8fa; border: 1px solid #e5e7eb; padding: 7px 10px; text-align: left; font-weight: 600; }
+  tbody td { border: 1px solid #e5e7eb; padding: 7px 10px; vertical-align: top; }
+  tbody tr:nth-child(even) td { background: #f7f8fa; }
+  .note {
+    background: #eff6ff;
+    border-left: 3px solid #3b82d4;
+    border-radius: 0 4px 4px 0;
+    padding: 9px 13px;
+    font-size: 13px;
+    margin: 10px 0 14px;
+  }
+  .warn {
+    background: #fffbeb;
+    border-left: 3px solid #d97706;
+    border-radius: 0 4px 4px 0;
+    padding: 9px 13px;
+    font-size: 13px;
+    margin: 10px 0 14px;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 10px;
+  }
+  .badge-blue { background: #dbeafe; color: #1d4ed8; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-purple { background: #ede9fe; color: #5b21b6; }
+  .toc { border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px 18px; margin-bottom: 30px; }
+  .toc-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  .toc ol { margin: 0; padding-left: 18px; }
+  .toc li { margin-bottom: 3px; font-size: 13px; }
+  .toc a { color: #3b82d4; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #e5e7eb; margin: 28px 0; }
+  .footer {
+    text-align: center; font-size: 11px; color: #57606a;
+    border-top: 1px solid #e5e7eb; padding-top: 12px; margin-top: 40px;
+  }
+  .step-num {
+    display: inline-block;
+    width: 22px; height: 22px;
+    background: #3b82d4; color: #fff;
+    border-radius: 50%;
+    font-size: 11px; font-weight: 700;
+    text-align: center; line-height: 22px;
+    margin-right: 6px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Git &amp; GitHub Playbook</h1>
+  <p class="subtitle">End-to-end reference: feature branch → code change → PR → merge → backport  |  Based on real work from PR <a href="https://github.com/hashicorp/consul-enterprise/pull/13027" style="color:#3b82d4">#13027</a></p>
+
+  <div class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#concepts">Key concepts &amp; branch model</a></li>
+      <li><a href="#setup">One-time setup</a></li>
+      <li><a href="#feature-branch">Create a feature branch</a></li>
+      <li><a href="#code-change">Make &amp; commit code changes</a></li>
+      <li><a href="#changelog">Add a changelog entry</a></li>
+      <li><a href="#push">Push the branch</a></li>
+      <li><a href="#pr">Raise a Pull Request</a></li>
+      <li><a href="#labels">Add backport labels</a></li>
+      <li><a href="#pr-update">Update an open PR (retarget / rebase)</a></li>
+      <li><a href="#ci">Triage CI failures</a></li>
+      <li><a href="#merge">Merge the PR</a></li>
+      <li><a href="#backport">Backport to release branches</a></li>
+      <li><a href="#reference">Quick reference card</a></li>
+    </ol>
+  </div>
+
+  
+  <h2 id="concepts">1 — Key concepts &amp; branch model</h2>
+
+  <table>
+    <thead><tr><th>Branch</th><th>What it is</th><th>When to target</th></tr></thead>
+    <tbody>
+      <tr><td><code>main</code></td><td>Next unreleased version. All new features and fixes go here first.</td><td>Always — this is the primary PR target</td></tr>
+      <tr><td><code>release/2.0.x</code></td><td>Active long-lived maintenance branch for the 2.0 series. Patch releases (2.0.1, 2.0.2 …) are cut from here.</td><td>Backport after merging to main</td></tr>
+      <tr><td><code>release/1.22.x</code></td><td>Active maintenance branch for 1.22 series</td><td>Backport after merging to main</td></tr>
+      <tr><td><code>release/1.21.x</code></td><td>Active maintenance branch for 1.21 series (customer version)</td><td>Backport after merging to main</td></tr>
+      <tr><td><code>release/2.0.0</code></td><td>Frozen snapshot of the 2.0.0 GA tag — do not target</td><td>Never target directly</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note"><strong>Rule:</strong> Always raise your PR against <code>main</code> first. After merge, backport to the relevant <code>release/x.y.z</code> branches using cherry-pick or the automated backport bot.</div>
+
+  
+  <h2 id="setup">2 — One-time setup</h2>
+
+  <div class="cmd-label">Configure git identity</div>
+<pre>git config --global user.name "Your Name"
+git config --global user.email "you@example.com"</pre>
+
+  <div class="cmd-label">Authenticate GitHub CLI (gh)</div>
+<pre>gh auth login          <span class="comment"># follow prompts — choose SSH or HTTPS</span>
+gh auth status         <span class="comment"># verify you are logged in</span></pre>
+
+  <div class="cmd-label">Clone the repo (first time only)</div>
+<pre>git clone git@github.com:hashicorp/consul-enterprise.git
+cd consul-enterprise</pre>
+
+  
+  <h2 id="feature-branch">3 — Create a feature branch</h2>
+
+  <p>Always branch off the latest <code>main</code> so your work is as close to the merge target as possible.</p>
+
+  <div class="cmd-label">Fetch latest state from remote and branch off main</div>
+<pre>git fetch origin                        <span class="comment"># download all remote updates</span>
+git checkout -b feature/my-fix origin/main
+<span class="comment"># Convention: feature/&lt;short-description&gt;  or  fix/&lt;short-description&gt;</span></pre>
+
+  <p>Example from PR #13027:</p>
+<pre>git checkout -b feature/api-gw-suppress-envoy-headers origin/main</pre>
+
+  <div class="note"><strong>Naming tip:</strong> Use <code>feature/</code> for new capabilities, <code>fix/</code> for bug fixes, <code>backport/</code> for cherry-picks to release branches. Keep it lowercase with hyphens.</div>
+
+  
+  <h2 id="code-change">4 — Make &amp; commit code changes</h2>
+
+  <h3>Stage and commit</h3>
+<pre><span class="comment"># Stage specific files (preferred — never use "git add .")</span>
+git add agent/xds/config/config.go
+git add agent/xds/listeners.go
+git add agent/xds/listeners_apigateway.go
+
+<span class="comment"># Commit with a meaningful message</span>
+git commit -m "agent/xds: add envoy_suppress_envoy_headers config key for API Gateway
+
+Add a new ProxyConfig key that sets ServerHeaderTransformation=PASS_THROUGH
+on the HttpConnectionManager for API Gateway HTTP listeners.
+
+Usage:
+  spec:
+    config:
+      envoy_suppress_envoy_headers: true"</pre>
+
+  <div class="warn"><strong>Never commit:</strong> binary files, built binaries, <code>*.log</code> files, or secrets. Check <code>git status</code> before staging.</div>
+
+  <h3>Check what you have staged / unstaged</h3>
+<pre>git status                   <span class="comment"># summary of changed files</span>
+git diff                     <span class="comment"># unstaged changes (line-by-line)</span>
+git diff --staged            <span class="comment"># staged changes (what will be committed)</span>
+git diff --stat              <span class="comment"># summary: files changed, insertions, deletions</span></pre>
+
+  <h3>Undo a mistake before pushing</h3>
+<pre>git reset HEAD &lt;file&gt;        <span class="comment"># unstage a file</span>
+git checkout -- &lt;file&gt;       <span class="comment"># discard changes in a file (cannot be undone)</span>
+git reset --soft HEAD~1      <span class="comment"># undo last commit, keep changes staged</span></pre>
+
+  
+  <h2 id="changelog">5 — Add a changelog entry</h2>
+
+  <p>This repo requires a changelog file named after the PR number. The PR number is only known after you open the PR — so either add it after opening, or use a placeholder and amend.</p>
+
+  <div class="cmd-label">File: <code>.changelog/&lt;PR_NUMBER&gt;.txt</code></div>
+<pre><span class="comment"># Format — pick the correct type:</span>
+<span class="comment">#   release-note:improvement   new feature or enhancement</span>
+<span class="comment">#   release-note:bug           bug fix</span>
+<span class="comment">#   release-note:deprecation   deprecating something</span>
+<span class="comment">#   release-note:note          general note</span>
+
+```release-note:improvement
+xds: **(Enterprise only)** Add two new opt-in `ProxyDefaults.spec.config` keys
+for controlling the `server` response header on API Gateway HTTP listeners:
+`envoy_suppress_envoy_headers` (removes the header entirely) and
+`envoy_server_header_name` (renames it to a custom value).
+```</pre>
+
+  <div class="cmd-label">Stage and commit the changelog file</div>
+<pre>git add .changelog/13027.txt
+git commit -m "changelog: add entry for PR #13027"</pre>
+
+  
+  <h2 id="push">6 — Push the branch</h2>
+
+<pre><span class="comment"># First push (sets upstream tracking)</span>
+git push -u origin feature/api-gw-suppress-envoy-headers
+
+<span class="comment"># Subsequent pushes (normal)</span>
+git push
+
+<span class="comment"># Force-push after a rebase (use --force-with-lease, NOT --force)</span>
+git push origin feature/api-gw-suppress-envoy-headers --force-with-lease
+<span class="comment"># --force-with-lease is safer: it refuses if someone else pushed to the same branch</span></pre>
+
+  
+  <h2 id="pr">7 — Raise a Pull Request</h2>
+
+  <h3>Using GitHub CLI (gh)</h3>
+<pre>gh pr create \
+  --base main \
+  --head feature/api-gw-suppress-envoy-headers \
+  --title "agent/xds: add envoy_suppress_envoy_headers and envoy_server_header_name" \
+  --body "### Description
+...
+### Testing
+...
+### PR Checklist
+* [x] updated test coverage
+* [x] appropriate backport labels added
+* [x] not a security concern"</pre>
+
+  <h3>View the PR you just created</h3>
+<pre>gh pr view 13027                         <span class="comment"># human-readable summary</span>
+gh pr view 13027 --json number,title,baseRefName,state,url</pre>
+
+  <h3>Edit PR title or description later</h3>
+<pre>gh pr edit 13027 --title "new title"
+gh pr edit 13027 --body "new full body text"</pre>
+
+  
+  <h2 id="labels">8 — Add backport labels</h2>
+
+  <p>Labels tell the backport automation which release branches to cherry-pick to after merge. Always add both the CE and ENT variant for each release line.</p>
+
+  <div class="cmd-label">List all available backport labels</div>
+<pre>gh label list --limit 100 | grep backport</pre>
+
+  <div class="cmd-label">Add labels to an open PR</div>
+<pre>gh pr edit 13027 \
+  --add-label "backport/1.21" \
+  --add-label "backport/ent/1.21" \
+  --add-label "backport/1.22" \
+  --add-label "backport/ent/1.22" \
+  --add-label "backport/2.0" \
+  --add-label "backport/ent/2.0"</pre>
+
+  <div class="cmd-label">Verify labels were applied</div>
+<pre>gh pr view 13027 --json labels | python3 -c \
+  "import json,sys; [print(l['name']) for l in json.load(sys.stdin)['labels']]"</pre>
+
+  <table>
+    <thead><tr><th>Label</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>backport/1.21</code></td><td>Bot cherry-picks to <code>release/1.21.x</code> (CE code)</td></tr>
+      <tr><td><code>backport/ent/1.21</code></td><td>Bot cherry-picks to <code>release/1.21.x</code> (ENT-specific code)</td></tr>
+      <tr><td><code>backport/1.22</code></td><td>Bot cherry-picks to <code>release/1.22.x</code> (CE code)</td></tr>
+      <tr><td><code>backport/ent/1.22</code></td><td>Bot cherry-picks to <code>release/1.22.x</code> (ENT-specific code)</td></tr>
+      <tr><td><code>backport/2.0</code></td><td>Bot cherry-picks to <code>release/2.0.x</code> (CE code)</td></tr>
+      <tr><td><code>backport/ent/2.0</code></td><td>Bot cherry-picks to <code>release/2.0.x</code> (ENT-specific code)</td></tr>
+    </tbody>
+  </table>
+
+  
+  <h2 id="pr-update">9 — Update an open PR (retarget / rebase)</h2>
+
+  <h3>Retarget PR to a different base branch</h3>
+<pre><span class="comment"># Change PR base from release/2.0.0 → release/2.0.x → main</span>
+gh pr edit 13027 --base release/2.0.x
+gh pr edit 13027 --base main</pre>
+
+  <h3>Rebase feature branch onto a different base (after retargeting)</h3>
+<pre><span class="comment"># Scenario: branch was on release/2.0.x, now retargeting to main</span>
+<span class="comment"># cc11b9a6c8 = the last commit on release/2.0.x BEFORE our 2 commits</span>
+<span class="comment"># --onto transplants ONLY our commits onto main, skipping all intermediate history</span>
+
+git fetch origin
+git rebase --onto origin/main cc11b9a6c8 feature/api-gw-suppress-envoy-headers
+<span class="comment"># If conflicts: fix files, then: git add &lt;file&gt; &amp;&amp; git rebase --continue</span>
+<span class="comment"># To abort: git rebase --abort</span>
+
+git push origin feature/api-gw-suppress-envoy-headers --force-with-lease</pre>
+
+  <div class="note"><strong>How to find <code>cc11b9a6c8</code> (the fork point):</strong><br />
+  <code>git merge-base feature/api-gw-suppress-envoy-headers origin/release/2.0.x</code><br />
+  This prints the common ancestor commit — use that as the third argument to <code>--onto</code>.</div>
+
+  <h3>Keep branch up-to-date with main (no rebase needed for simple additions)</h3>
+<pre>git fetch origin
+git merge origin/main              <span class="comment"># merge latest main into your branch</span>
+<span class="comment"># OR (cleaner history, but rewrites commits):</span>
+git rebase origin/main             <span class="comment"># replay your commits on top of latest main</span></pre>
+
+  
+  <h2 id="ci">10 — Triage CI failures</h2>
+
+  <h3>Check PR CI status</h3>
+<pre>gh pr checks 13027                            <span class="comment"># one-line summary of all checks</span>
+gh pr checks 13027 2&gt;&amp;1 | grep -v "pass\|skip" <span class="comment"># show only failures/pending</span></pre>
+
+  <h3>Get detailed failure logs</h3>
+<pre><span class="comment"># Get run ID and job ID from gh pr checks output, then:</span>
+gh run view &lt;RUN_ID&gt; --log-failed          <span class="comment"># show only failed steps</span>
+gh run view --job &lt;JOB_ID&gt; --log           <span class="comment"># full log for one job</span>
+
+<span class="comment"># Or via API (useful for completed jobs):</span>
+curl -sL \
+  -H "Authorization: Bearer $(gh auth token)" \
+  "https://api.github.com/repos/hashicorp/consul-enterprise/actions/jobs/&lt;JOB_ID&gt;/logs" \
+  | grep -i "FAIL\|Error\|panic"</pre>
+
+  <h3>Re-run a failed workflow</h3>
+<pre>gh run rerun &lt;RUN_ID&gt; --failed   <span class="comment"># re-run only the failed jobs</span>
+gh run rerun &lt;RUN_ID&gt;            <span class="comment"># re-run the entire workflow</span></pre>
+
+  <h3>Force a fresh CI run (e.g. to retrigger CodeQL)</h3>
+<pre><span class="comment"># Push an empty commit — this triggers all PR workflows fresh</span>
+git commit --allow-empty -m "ci: trigger re-run"
+git push</pre>
+
+  <h3>Common CI failures and what they mean</h3>
+  <table>
+    <thead><tr><th>Check name</th><th>Common cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>changelog-check</code></td><td>Missing <code>.changelog/&lt;PR&gt;.txt</code></td><td>Create the file and push</td></tr>
+      <tr><td><code>goldenfile-check</code></td><td>XDS test golden files out of date</td><td>Run <code>make envoy-regen</code> locally, commit updated files</td></tr>
+      <tr><td><code>Verify Branch Ancestry</code></td><td>Branch not descended from target base</td><td>Rebase onto correct base and force-push</td></tr>
+      <tr><td><code>go-test-api / go-test</code></td><td>Flaky test in <code>api/</code> package (timing/grpc)</td><td>Re-run the job — usually passes on retry</td></tr>
+      <tr><td><code>Analyze (go)</code> (CodeQL)</td><td>Runner shutdown (infrastructure kill)</td><td>Push empty commit to retrigger</td></tr>
+      <tr><td><code>lint</code></td><td>Code style / import issues</td><td>Run <code>make lint</code> locally, fix and push</td></tr>
+    </tbody>
+  </table>
+
+  
+  <h2 id="merge">11 — Merge the PR</h2>
+
+  <p>Only merge once all required checks are green and the PR is approved.</p>
+
+<pre><span class="comment"># Squash merge (all commits squashed into one — preferred for feature branches)</span>
+gh pr merge 13027 --squash \
+  --subject "agent/xds: add envoy_suppress_envoy_headers and envoy_server_header_name (#13027)" \
+  --body "Squash merge of PR #13027. Summary of changes..."
+
+<span class="comment"># Verify it merged</span>
+gh pr view 13027 --json state,mergedAt,mergeCommit | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print(d['state'], d['mergedAt'], d['mergeCommit']['oid'])"</pre>
+
+  <div class="note"><strong>Merge strategies:</strong><br />
+  <code>--squash</code> — collapses all commits into one clean commit on the base branch. Best for feature branches with many WIP commits.<br />
+  <code>--merge</code> — creates a merge commit. Preserves all individual commits.<br />
+  <code>--rebase</code> — replays commits individually on the base branch.</div>
+
+  
+  <h2 id="backport">12 — Backport to release branches</h2>
+
+  <p>After merging to <code>main</code>, the fix needs to reach the active maintenance branches. The backport bot may do this automatically based on labels — but always verify and fill in any gaps manually.</p>
+
+  <h3>Step 1 — Find the merge commit SHA</h3>
+<pre>git fetch origin
+git log origin/main --oneline | grep "13027\|your-feature-description" | head -3
+<span class="comment"># Example output: 874c087476 agent/xds: add envoy_suppress_envoy_headers (#13027)</span></pre>
+
+  <h3>Step 2 — Check if the bot raised PRs automatically</h3>
+<pre>gh pr list --search "backport-13027 OR 13027 in:title" --limit 20 \
+  --json number,title,baseRefName,state \
+  | python3 -c "import json,sys; [print(r['number'],r['state'],r['baseRefName'],r['title'][:60]) for r in json.load(sys.stdin)]"</pre>
+
+  <h3>Step 3 — Close duplicate auto PRs if bot created more than one</h3>
+<pre>gh pr close 13114 --comment "Closing duplicate — keeping PR #13113."</pre>
+
+  <h3>Step 4 — Manually cherry-pick for any missing branch</h3>
+<pre><span class="comment"># Create a backport branch off the target release branch</span>
+git checkout -b backport/13027/release-1.22.x origin/release/1.22.x
+
+<span class="comment"># Cherry-pick the merge commit from main</span>
+git cherry-pick 874c087476
+<span class="comment"># If conflicts arise:</span>
+<span class="comment">#   1. Open the conflicted file and resolve manually</span>
+<span class="comment">#   2. git add &lt;resolved-file&gt;</span>
+<span class="comment">#   3. git cherry-pick --continue</span>
+<span class="comment"># To abort: git cherry-pick --abort</span>
+
+<span class="comment"># Verify the diff looks correct (same 4 files, same +/- numbers)</span>
+git diff origin/release/1.22.x...backport/13027/release-1.22.x --stat
+
+<span class="comment"># Push</span>
+git push origin backport/13027/release-1.22.x</pre>
+
+  <h3>Step 5 — Raise the backport PR</h3>
+<pre>gh pr create \
+  --base release/1.22.x \
+  --head backport/13027/release-1.22.x \
+  --title "Backport of agent/xds: add envoy_suppress_envoy_headers into release/1.22.x" \
+  --body "Backport of PR #13027. Cherry-picked from merge commit 874c087476.
+
+Original PR: https://github.com/hashicorp/consul-enterprise/pull/13027" \
+  --label "theme/envoy/xds"</pre>
+
+  <h3>Repeat Step 4–5 for each missing release branch</h3>
+<pre><span class="comment"># For release/2.0.x</span>
+git checkout -b backport/13027/release-2.0.x origin/release/2.0.x
+git cherry-pick 874c087476
+git diff origin/release/2.0.x...backport/13027/release-2.0.x --stat
+git push origin backport/13027/release-2.0.x
+gh pr create --base release/2.0.x --head backport/13027/release-2.0.x \
+  --title "Backport of agent/xds: ... into release/2.0.x" \
+  --body "Backport of PR #13027 ..." --label "theme/envoy/xds"</pre>
+
+  <div class="warn"><strong>Watch out for copyright header conflicts:</strong> Different release branches may have different copyright styles (<code>HashiCorp</code> vs <code>IBM Corp.</code>). Git's three-way merge usually handles this automatically — always check <code>git diff --stat</code> after cherry-pick to confirm no unexpected files changed.</div>
+
+  <hr />
+
+  
+  <h2 id="reference">13 — Quick reference card</h2>
+
+  <table>
+    <thead><tr><th>Task</th><th>Command</th></tr></thead>
+    <tbody>
+      <tr><td>Create branch off main</td><td><code>git checkout -b feature/my-fix origin/main</code></td></tr>
+      <tr><td>Stage specific files</td><td><code>git add path/to/file.go</code></td></tr>
+      <tr><td>Commit with message</td><td><code>git commit -m "pkg: short summary\n\nLonger description"</code></td></tr>
+      <tr><td>Push branch (first time)</td><td><code>git push -u origin feature/my-fix</code></td></tr>
+      <tr><td>Push after rebase</td><td><code>git push --force-with-lease</code></td></tr>
+      <tr><td>Raise PR</td><td><code>gh pr create --base main --head feature/my-fix --title "..." --body "..."</code></td></tr>
+      <tr><td>Add backport labels</td><td><code>gh pr edit &lt;N&gt; --add-label "backport/1.21" --add-label "backport/ent/1.21"</code></td></tr>
+      <tr><td>Retarget PR base</td><td><code>gh pr edit &lt;N&gt; --base main</code></td></tr>
+      <tr><td>Check CI status</td><td><code>gh pr checks &lt;N&gt;</code></td></tr>
+      <tr><td>Re-run failed CI</td><td><code>gh run rerun &lt;RUN_ID&gt; --failed</code></td></tr>
+      <tr><td>Trigger fresh CI</td><td><code>git commit --allow-empty -m "ci: retrigger" &amp;&amp; git push</code></td></tr>
+      <tr><td>Merge PR (squash)</td><td><code>gh pr merge &lt;N&gt; --squash --subject "..."</code></td></tr>
+      <tr><td>Find merge commit SHA</td><td><code>git log origin/main --oneline | grep "&lt;keyword&gt;"</code></td></tr>
+      <tr><td>Cherry-pick to release</td><td><code>git checkout -b backport/&lt;N&gt;/release-x.y.x origin/release/x.y.x &amp;&amp; git cherry-pick &lt;SHA&gt;</code></td></tr>
+      <tr><td>Verify backport diff</td><td><code>git diff origin/release/x.y.x...backport/&lt;N&gt;/release-x.y.x --stat</code></td></tr>
+      <tr><td>Raise backport PR</td><td><code>gh pr create --base release/x.y.x --head backport/&lt;N&gt;/release-x.y.x ...</code></td></tr>
+      <tr><td>Close duplicate PR</td><td><code>gh pr close &lt;N&gt; --comment "reason"</code></td></tr>
+      <tr><td>Switch branch</td><td><code>git checkout &lt;branch-name&gt;</code></td></tr>
+      <tr><td>List local branches</td><td><code>git branch</code></td></tr>
+      <tr><td>List remote branches</td><td><code>git branch -r | grep release</code></td></tr>
+      <tr><td>See recent commits</td><td><code>git log --oneline -10</code></td></tr>
+      <tr><td>Undo last commit (keep changes)</td><td><code>git reset --soft HEAD~1</code></td></tr>
+    </tbody>
+  </table>
+
+  <hr />
+  <h3>Complete end-to-end example (PR #13027 actual commands)</h3>
+<pre><span class="comment"># 1. Branch off main</span>
+git checkout -b feature/api-gw-suppress-envoy-headers origin/main
+
+<span class="comment"># 2. Edit code (3 files), then commit</span>
+git add agent/xds/config/config.go agent/xds/listeners.go agent/xds/listeners_apigateway.go
+git commit -m "agent/xds: add envoy_suppress_envoy_headers config key for API Gateway"
+
+<span class="comment"># 3. Second commit (rename feature)</span>
+git add agent/xds/config/config.go agent/xds/listeners.go agent/xds/listeners_apigateway.go
+git commit -m "agent/xds: add envoy_server_header_name config key for API Gateway"
+
+<span class="comment"># 4. Changelog</span>
+git add .changelog/13027.txt
+git commit -m "changelog: add entry for PR #13027"
+
+<span class="comment"># 5. Push</span>
+git push -u origin feature/api-gw-suppress-envoy-headers
+
+<span class="comment"># 6. Raise PR against main</span>
+gh pr create --base main --head feature/api-gw-suppress-envoy-headers \
+  --title "agent/xds: add envoy_suppress_envoy_headers and envoy_server_header_name" \
+  --body "..."   <span class="comment"># PR #13027 created</span>
+
+<span class="comment"># 7. Add backport labels</span>
+gh pr edit 13027 \
+  --add-label "backport/1.21" --add-label "backport/ent/1.21" \
+  --add-label "backport/1.22" --add-label "backport/ent/1.22"
+
+<span class="comment"># 8. Wait for CI to go green, get approval, then merge</span>
+gh pr merge 13027 --squash \
+  --subject "agent/xds: add envoy_suppress_envoy_headers and envoy_server_header_name (#13027)"
+
+<span class="comment"># 9. Note the merge commit SHA</span>
+git fetch origin
+git log origin/main --oneline | grep 13027
+<span class="comment"># → 874c087476 agent/xds: add envoy_suppress_envoy_headers (#13027)</span>
+
+<span class="comment"># 10. Check auto backport PRs</span>
+gh pr list --search "13027 in:title" --json number,title,baseRefName,state
+
+<span class="comment"># 11. Manually backport to 1.22.x (bot missed it)</span>
+git checkout -b backport/13027/release-1.22.x origin/release/1.22.x
+git cherry-pick 874c087476
+git diff origin/release/1.22.x...backport/13027/release-1.22.x --stat
+git push origin backport/13027/release-1.22.x
+gh pr create --base release/1.22.x --head backport/13027/release-1.22.x \
+  --title "Backport of agent/xds: ... into release/1.22.x" --body "..."
+
+<span class="comment"># 12. Manually backport to 2.0.x</span>
+git checkout -b backport/13027/release-2.0.x origin/release/2.0.x
+git cherry-pick 874c087476
+git push origin backport/13027/release-2.0.x
+gh pr create --base release/2.0.x --head backport/13027/release-2.0.x \
+  --title "Backport of agent/xds: ... into release/2.0.x" --body "..."</pre>
+
+  <div class="footer">Made with IBM Bob</div>
+</div>
+</body>
+</html>

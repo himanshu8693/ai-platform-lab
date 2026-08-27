@@ -1,0 +1,82 @@
+# =============================================================================
+# .gitignore — ai-platform-lab
+# =============================================================================
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+# Compiled binaries
+platform/controller/controller
+platform/controller/*.exe
+*.out
+
+# Test coverage
+*.coverprofile
+coverage.out
+
+# Go workspace (local dev override — do not commit)
+go.work
+go.work.sum
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.uv/
+
+# Benchmark output (generated — commit only intentionally)
+benchmark_results.csv
+*.csv
+
+# ── Terraform ─────────────────────────────────────────────────────────────────
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/tfplan.binary
+terraform/plan.txt
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/crash.log
+terraform/override.tf
+terraform/override.tf.json
+
+# ── Kubernetes / Helm ─────────────────────────────────────────────────────────
+# Generated manifests (output of helm template / make manifests)
+platform/controller/config/crd/bases/*.yaml
+*.rendered.yaml
+
+# kubeconfig — never commit
+kubeconfig
+kubeconfig.yaml
+*.kubeconfig
+
+# ── Secrets — hard stops ─────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+vault-token
+vault_token
+hf_token
+secrets.yaml
+secrets.json
+
+# ── IDE / OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── CI artifacts (generated in workflow — not for source control) ─────────────
+test-results.xml
+coverage.xml
+trivy-results.sarif

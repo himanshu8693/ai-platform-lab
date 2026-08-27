@@ -1,0 +1,34 @@
+---
+# =============================================================================
+# clusters/local-kind/app-of-apps.yaml
+# ArgoCD App-of-Apps root application for ai-platform-lab
+#
+# Apply this once after ArgoCD is bootstrapped:
+#   kubectl apply -n argocd -f clusters/local-kind/app-of-apps.yaml
+#
+# ArgoCD then manages all child applications declaratively.
+# All child apps are in clusters/local-kind/apps/*.yaml
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-platform-lab
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/ai-platform-lab
+    targetRevision: HEAD
+    path: clusters/local-kind/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,205 @@
+---
+# =============================================================================
+# Kyverno ClusterPolicy: Require Signed Images — AUDIT MODE
+#
+# ARB-required addition: an Audit-mode shadow policy must exist alongside
+# the Enforce policy so that:
+#   1. New image variants can be validated without blocking deployments
+#      during the initial rollout period of a new image signing workflow.
+#   2. The audit report (PolicyReport CRD) provides a visibility layer for
+#      images that WOULD be blocked, without actually blocking them.
+#      This is required for safe Enforce mode rollout in production.
+#
+# Operational workflow:
+#   Phase 1 (new signing workflow rollout): apply Audit policy only.
+#             Monitor PolicyReport for violations. Fix unsigned images.
+#   Phase 2 (stable): switch Enforce policy's validationFailureAction to Enforce.
+#             Keep Audit policy running — it now confirms the Enforce policy
+#             is catching everything it should.
+#
+# Check audit violations:
+#   kubectl get policyreport -n inference -o yaml
+#   kubectl get clusterpolicyreport -o yaml
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images-audit
+  annotations:
+    policies.kyverno.io/title: Require Signed Container Images (Audit)
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      AUDIT SHADOW of require-signed-images enforce policy.
+      Generates PolicyReport violations for unsigned images without blocking
+      admission. Used during signing workflow rollout and for ongoing compliance
+      visibility. See require-signed-images for the enforce-mode counterpart.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: audit-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - inference
+                - team-a
+                - team-b
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/himanshusharma/ai-platform-lab/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      # Same key as enforce policy.
+                      # Replace with output of: cat cosign.pub
+                      -----END PUBLIC KEY-----
+          mutateDigest: false    # Audit mode: do not mutate; only report
+          verifyDigest: true
+          required: true
+
+---
+# =============================================================================
+# Kyverno ClusterPolicy: Require Signed Images — ENFORCE MODE
+#
+# Enforces that all container images in the inference namespace are signed
+# with Cosign and the signature verifies against the platform's public key.
+#
+# Signing happens in CI: .github/workflows/ci-cd-platform-gate.yaml
+# job: cosign-sign (runs on push to main only)
+#
+# Key pair: generated at bootstrap with `cosign generate-key-pair`
+# Public key is stored in ConfigMap platform-cosign-pubkey in kyverno namespace.
+#
+# Docs: https://kyverno.io/docs/writing-policies/verify-images/
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+  annotations:
+    policies.kyverno.io/title: Require Signed Container Images
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Enforces that all container images in the inference namespace are
+      signed with Cosign. Images without a valid signature are rejected at
+      admission time. Signed in CI via cosign sign on push to main.
+      See require-signed-images-audit for the audit-mode shadow policy.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: verify-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - inference
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/himanshusharma/ai-platform-lab/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      # Replace with output of: cat cosign.pub
+                      # Generated at bootstrap: cosign generate-key-pair
+                      # Store private key in Vault: vault kv put secret/ci/cosign key=@cosign.key
+                      -----END PUBLIC KEY-----
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+---
+# =============================================================================
+# Kyverno ClusterPolicy: Disallow Latest Tag
+#
+# Rejects pods that reference images with :latest tag.
+# Enforces immutable image references (digest or explicit version tag).
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - inference
+                - team-a
+                - team-b
+      validate:
+        message: "Image tag ':latest' is not allowed. Use a specific version tag or digest."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  - key: "{{ element.image }}"
+                    operator: NotContains
+                    value: ":"
+---
+# =============================================================================
+# Kyverno ClusterPolicy: Require Non-Root Containers
+#
+# Enforces runAsNonRoot: true and disallows privilege escalation
+# for all pods in tenant and inference namespaces.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root-containers
+  annotations:
+    policies.kyverno.io/title: Require Non-Root Containers
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-runAsNonRoot
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - inference
+                - team-a
+                - team-b
+      validate:
+        message: "Containers must run as non-root. Set securityContext.runAsNonRoot: true."
+        pattern:
+          spec:
+            =(initContainers):
+              - =(securityContext):
+                  =(runAsNonRoot): true
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false

@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# topologies/vault-ha-raft/scenarios/raft-leader-kill.yaml
+# Fault Scenario: Raft Leader Kill
+#
+# Simulates: Sev-1 where the Vault active leader is unexpectedly terminated
+# (OOMKilled, node drain, or network partition). Raft must elect a new leader
+# from the remaining standbys. Observes the MTTR from leader loss to new
+# leader availability.
+#
+# Symptoms reproduced:
+#   • vault status returns "Vault is sealed" or "connection refused" for ~5-15s
+#   • vault-test-client logs: "503 Service Unavailable" during election
+#   • Prometheus: vault_core_active drops to 0, then recovers on new leader
+#   • vault operator raft list-peers shows vault-0 removed from cluster
+#
+# AI RCA query:
+#   "Get events and pod status for all vault pods in topology-vault-ha-raft.
+#    What does the raft peer list look like? When did the leader change?"
+#
+# Apply with: bash scripts/scenario-inject.sh vault-ha-raft raft-leader-kill
+# Remediate:  kubectl uncordon <node> OR kubectl delete pod vault-0
+#             -n topology-vault-ha-raft (Raft re-joins on restart)
+# =============================================================================
+
+# The scenario manifest patches vault-0 to simulate an OOMKill.
+# Setting a resource limit far below the actual usage triggers the OOM killer.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: topology-vault-ha-raft
+  labels:
+    platform.ai/scenario:     "raft-leader-kill"
+    platform.ai/fault-type:   "leader-failure"
+    platform.ai/active-fault: "true"
+  annotations:
+    ephemeral-lab/scenario-name: "raft-leader-kill"
+    ephemeral-lab/fault-description: >
+      Triggers OOMKill on vault-0 (active leader) by reducing its memory limit
+      to 1Mi — far below operational minimum. Kubernetes OOM killer terminates
+      the container within seconds. Remaining nodes vault-1 and vault-2 elect
+      a new Raft leader (typically within 5-15 seconds).
+    ephemeral-lab/remediation: >
+      kubectl patch statefulset vault -n topology-vault-ha-raft
+      -p '{"spec":{"template":{"spec":{"containers":[{"name":"vault","resources":
+      {"limits":{"memory":"512Mi"}}}]}}}}'
+    ephemeral-lab/expected-recovery-seconds: "15"
+    ephemeral-lab/promql_leader: "vault_core_active{namespace='topology-vault-ha-raft'}"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    spec:
+      containers:
+        - name: vault
+          resources:
+            limits:
+              # 1Mi is intentionally far below the minimum operational memory.
+              # This triggers the Linux OOM killer within seconds of applying.
+              memory: "1Mi"

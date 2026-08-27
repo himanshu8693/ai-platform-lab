@@ -1,0 +1,150 @@
+# =============================================================================
+# Falco Custom Rules — AI Inference Workload
+#
+# These rules extend Falco's default ruleset with inference-specific
+# threat detection for the ai-platform-lab.
+#
+# ── OrbStack / Driver-Loader Note ─────────────────────────────────────────────
+# Falco on OrbStack requires kernel headers matching OrbStack's Linux VM kernel.
+# The default Falco Helm chart's driver-loader init container pulls headers for
+# the Ubuntu/Debian kernel, which does NOT match OrbStack's kernel.
+#
+# Mitigation on OrbStack (local dev):
+#   1. Use Falco with --driver=modern_ebpf (no kernel headers needed):
+#      helm install falco falcosecurity/falco \
+#        --set driver.kind=modern_ebpf \
+#        --set-string driver.loader.initContainer.enabled=false
+#
+#   2. Or use ebpf driver with OrbStack kernel version:
+#      orbctl shell --root uname -r   # get kernel version
+#      helm install falco falcosecurity/falco \
+#        --set driver.kind=ebpf \
+#        --set ebpf.kernelVersion=$(orbctl shell --root uname -r)
+#
+# Production note: On EKS/GKE nodes with standard kernels, driver-loader
+# works without modification. This limitation is OrbStack-specific.
+# =============================================================================
+
+- rule: Inference Pod Shell Execution
+  desc: >
+    Detects shell execution inside an inference pod. LLM inference containers
+    have no operational need to spawn shells. This may indicate container escape
+    or a compromised model serving process executing arbitrary code.
+  condition: >
+    spawned_process
+    and container
+    and container.image.repository in (ollama/ollama, vllm/vllm-openai, nvcr.io/nvidia/tritonserver)
+    and proc.name in (bash, sh, zsh, fish, dash, ksh)
+    and not proc.pname in (runc, containerd-shim)
+  output: >
+    Shell spawned in inference container
+    (user=%user.name user_loginuid=%user.loginuid
+     container_id=%container.id container_name=%container.name
+     image=%container.image.repository:%container.image.tag
+     shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline)
+  priority: WARNING
+  tags: [inference, shell, mitre_execution]
+
+- rule: Inference Pod Unexpected Outbound Connection
+  desc: >
+    Detects unexpected outbound TCP connections from inference pods.
+    Inference containers should only connect to: HuggingFace Hub (model pull),
+    Vault (secret fetch), and internal cluster services.
+    Any other outbound connection may indicate C2 or data exfiltration.
+  condition: >
+    outbound
+    and container
+    and container.image.repository in (ollama/ollama, vllm/vllm-openai)
+    and not (
+      fd.sip.name in (vault.vault.svc.cluster.local)
+      or fd.sip.name endswith ".huggingface.co"
+      or fd.sport in (53)
+    )
+    and fd.typechar = 4
+  output: >
+    Unexpected outbound connection from inference pod
+    (user=%user.name container_id=%container.id
+     image=%container.image.repository:%container.image.tag
+     dst=%fd.rip:%fd.rport proto=%fd.proto cmdline=%proc.cmdline)
+  priority: ERROR
+  tags: [inference, network, mitre_exfiltration]
+
+- rule: Model Weight File Modified
+  desc: >
+    Detects writes to the model weight directory (/models, /root/.ollama/models).
+    Model weights should be immutable at runtime; modification may indicate
+    model poisoning (MITRE T1565.001) or an attacker replacing weights via
+    a network utility.
+    ARB fix: removed wget and curl from the exclusion list. Those tools have
+    no legitimate need to write model weight files at runtime — they are the
+    primary exfiltration/staging vector for weight-swap attacks. The ollama
+    process itself handles all legitimate model pulls via its own API.
+  condition: >
+    open_write
+    and container
+    and container.image.repository in (ollama/ollama, vllm/vllm-openai)
+    and (
+      fd.name startswith /models/
+      or fd.name startswith /root/.ollama/models/
+    )
+    and not proc.name in (ollama, python3)
+  output: >
+    Model weight file modified at runtime
+    (user=%user.name container_id=%container.id
+     image=%container.image.repository:%container.image.tag
+     file=%fd.name proc=%proc.name cmdline=%proc.cmdline)
+  priority: CRITICAL
+  tags: [inference, integrity, model_poisoning, mitre_impact]
+
+- rule: Vault Secret File Read by Unexpected Process
+  desc: >
+    Detects access to Vault-injected secrets (/vault/secrets/) by any process
+    other than the expected entrypoint. Vault secrets should only be read by
+    the model serving process, not by shell scripts or utilities.
+  condition: >
+    open_read
+    and container
+    and fd.name startswith /vault/secrets/
+    and not proc.name in (ollama, python3, python, sh, bash)
+    and not proc.pname in (tini, dumb-init, s6-overlay)
+  output: >
+    Vault secret accessed by unexpected process
+    (user=%user.name container_id=%container.id
+     image=%container.image.repository:%container.image.tag
+     secret_file=%fd.name proc=%proc.name parent=%proc.pname)
+  priority: ERROR
+  tags: [vault, secrets, mitre_credential_access]
+
+- rule: Inference Container Privilege Escalation Attempt
+  desc: >
+    Detects setuid/setgid execution in inference containers.
+    All inference containers run as non-root (UID 1000+);
+    setuid execution is never expected.
+  condition: >
+    spawned_process
+    and container
+    and container.image.repository in (ollama/ollama, vllm/vllm-openai)
+    and (proc.is_suid_exe = true or proc.is_sgid_exe = true)
+  output: >
+    Setuid/setgid process in inference container
+    (user=%user.name container_id=%container.id
+     image=%container.image.repository:%container.image.tag
+     exe=%proc.exe proc=%proc.name parent=%proc.pname)
+  priority: CRITICAL
+  tags: [inference, privilege_escalation, mitre_privilege_escalation]
+
+- rule: Mock DCGM Exporter Unexpected Write
+  desc: >
+    The mock-dcgm-exporter runs with a read-only root filesystem.
+    Any write outside /tmp indicates a container escape or misconfiguration.
+  condition: >
+    open_write
+    and container
+    and container.image.repository = "mock-dcgm-exporter"
+    and not fd.name startswith /tmp/
+    and not fd.name startswith /proc/
+  output: >
+    Write detected in mock-dcgm-exporter container (read-only FS violation)
+    (user=%user.name container_id=%container.id file=%fd.name proc=%proc.name)
+  priority: WARNING
+  tags: [observability, filesystem_integrity]

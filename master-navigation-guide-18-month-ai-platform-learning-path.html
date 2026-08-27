@@ -1,0 +1,779 @@
+
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Master Navigation Guide — 19.5-Month AI Platform Learning Path (with Zero-Trust Hardening Sprint)</title>
+<style>
+:root{
+  --bg:#fff;--surface:#f7f8fa;--border:#e5e7eb;--text:#1f2328;--muted:#57606a;
+  --accent:#3b82d4;--purple:#7c5cd8;--green:#1a7f37;--danger:#cf222e;
+  --warn:#d97706;--code-bg:#161b22;--code-text:#e6edf3;
+  --rerun:#dc2626;--flask:#16a34a;--ai:#7c5cd8;--cert:#d97706;--bridge:#0891b2;
+  --mcp:#059669;--forge:#166534;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;font-size:13px;
+  line-height:1.65;background:var(--bg);color:var(--text);padding:24px 12px 60px}
+.page{max-width:780px;margin:0 auto}
+
+/* HEADER */
+.doc-header{border-bottom:2px solid var(--border);padding-bottom:16px;margin-bottom:22px}
+.badge{display:inline-block;background:var(--purple);color:#fff;font-size:10px;
+  font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:3px 8px;
+  border-radius:4px;margin-bottom:8px}
+.doc-header h1{font-size:21px;font-weight:700;margin-bottom:4px}
+.doc-header p{color:var(--muted);font-size:12.5px}
+
+h2{font-size:15px;font-weight:700;margin:34px 0 10px;padding-bottom:5px;
+  border-bottom:1px solid var(--border)}
+h3{font-size:13px;font-weight:700;margin:14px 0 5px}
+
+/* LEGEND */
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 18px}
+.leg{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600}
+.ld{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+
+/* HOW TO READ */
+.how-box{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 16px;margin:0 0 20px;font-size:12.5px}
+.how-box strong{display:block;margin-bottom:6px;font-size:13px}
+.how-box ol{padding-left:16px}
+.how-box li{padding:2px 0}
+
+/* TWIN-TRACK EXPLAINER */
+.twin{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 20px}
+.twin-card{border-radius:7px;padding:10px 13px;font-size:12px}
+.twin-card.devops{background:#fefce8;border:1px solid #fde68a}
+.twin-card.ai{background:#faf5ff;border:1px solid #ddd6fe}
+.twin-card h3{font-size:12px;margin:0 0 5px}
+.twin-card ul{padding-left:14px}
+.twin-card li{padding:1px 0}
+
+/* MONTH BLOCK */
+.month-block{border:1px solid var(--border);border-radius:8px;margin:8px 0;overflow:hidden}
+.month-header{display:flex;align-items:center;gap:10px;padding:8px 13px;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+.month-num{font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px;
+  flex-shrink:0;white-space:nowrap;color:#fff;background:var(--code-bg)}
+.month-title{font-weight:700;font-size:13px;flex:1}
+.month-cert{font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;
+  background:#fef3c7;color:#92400e;flex-shrink:0}
+.month-body{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.col-devops{padding:8px 12px;border-right:1px solid var(--border);font-size:12px}
+.col-ai{padding:8px 12px;font-size:12px}
+.col-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);margin-bottom:5px}
+.col-devops .col-label{color:#854d0e}
+.col-ai .col-label{color:#5b21b6}
+.item{display:flex;gap:6px;padding:2px 0;align-items:flex-start}
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px}
+.d-rerun{background:var(--rerun)}
+.d-devops{background:#ca8a04}
+.d-ai{background:var(--ai)}
+.d-cert{background:var(--cert)}
+.d-mcp{background:var(--mcp)}
+.d-forge{background:var(--forge)}
+.d-career{background:var(--bridge)}
+
+/* GATE */
+.gate{background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;
+  padding:4px 8px;font-size:11px;color:#92400e;margin-top:6px}
+
+/* SPECIAL MONTH (cert) */
+.month-block.cert-month .month-header{background:#fefce8;border-bottom-color:#fde68a}
+.month-block.mcp-month .month-header{background:#f0fdf4;border-bottom-color:#bbf7d0}
+.month-block.forge-month .month-header{background:#f0fdf4;border-bottom-color:#86efac}
+
+/* PHASE DIVIDERS */
+.phase-div{border-radius:8px;padding:10px 15px;margin:22px 0 6px;
+  display:flex;align-items:center;gap:10px}
+.phase-div.ph-rerun{background:#fff5f5;border:1px solid #fecaca}
+.phase-div.ph-foundation{background:#f0fdf4;border:1px solid #bbf7d0}
+.phase-div.ph-devops{background:#fefce8;border:1px solid #fde68a}
+.phase-div.ph-ai{background:#faf5ff;border:1px solid #ddd6fe}
+.phase-div.ph-converge{background:#f0f9ff;border:1px solid #bae6fd}
+.phase-div.ph-enterprise{background:#fdf4ff;border:1px solid #e9d5ff}
+.phase-div .pn{width:30px;height:30px;border-radius:6px;display:flex;
+  align-items:center;justify-content:center;font-size:13px;font-weight:800;
+  flex-shrink:0;color:#fff}
+.ph-rerun .pn{background:var(--rerun)}
+.ph-foundation .pn{background:var(--flask)}
+.ph-devops .pn{background:#ca8a04}
+.ph-ai .pn{background:var(--ai)}
+.ph-converge .pn{background:var(--bridge)}
+.ph-enterprise .pn{background:#9333ea}
+.phase-div .pm{flex:1}
+.phase-div .pt{font-size:13px;font-weight:700}
+.phase-div .ps{font-size:11px;color:var(--muted);margin-top:1px}
+.phase-div .pb{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;flex-shrink:0}
+.ph-rerun .pb{background:#fee2e2;color:#991b1b}
+.ph-foundation .pb{background:#dcfce7;color:#166534}
+.ph-devops .pb{background:#fef9c3;color:#854d0e}
+.ph-ai .pb{background:#ede9fe;color:#5b21b6}
+.ph-converge .pb{background:#e0f2fe;color:#0369a1}
+.ph-enterprise .pb{background:#f3e8ff;color:#6b21a8}
+
+/* FULL SEQUENCE TABLE */
+.seq-table{width:100%;border-collapse:collapse;margin:10px 0;font-size:11.5px}
+.seq-table th{background:var(--code-bg);color:var(--code-text);padding:6px 9px;
+  border:1px solid var(--border);font-weight:700;text-align:left}
+.seq-table td{padding:5px 9px;border:1px solid var(--border);vertical-align:top;line-height:1.5}
+.seq-table tr:nth-child(even) td{background:#fafbfc}
+.seq-table .wk{font-weight:800;color:var(--muted);white-space:nowrap}
+.pill{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;
+  border-radius:20px;margin:1px 2px 1px 0;white-space:nowrap}
+.pr{background:#fee2e2;color:#991b1b}
+.pd{background:#fef9c3;color:#854d0e}
+.pa{background:#ede9fe;color:#5b21b6}
+.pc{background:#fef3c7;color:#92400e}
+.pb2{background:#e0f2fe;color:#0369a1}
+.pm{background:#d1fae5;color:#065f46}
+.pf2{background:#f3e8ff;color:#6b21a8}
+.seq-table tr.cert td{background:#fffbeb !important}
+.seq-table tr.mcp-row td{background:#f0fdf4 !important}
+.seq-table tr.forge-row td{background:#ecfdf5 !important}
+
+/* APPENDIX MAP */
+.app-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.app-card{border:1px solid var(--border);border-radius:6px;padding:9px 12px;font-size:12px}
+.app-card .app-title{font-weight:700;font-size:12.5px;margin-bottom:4px;color:var(--accent)}
+.app-card .app-when{font-size:11px;color:var(--muted);margin-top:4px;padding-top:4px;
+  border-top:1px solid var(--border)}
+.app-card ul{padding-left:14px}
+.app-card li{padding:1px 0}
+
+/* CALLOUT */
+.callout{border-left:4px solid var(--accent);background:var(--surface);
+  padding:9px 13px;margin:12px 0;border-radius:0 6px 6px 0;font-size:12.5px}
+.callout.success{border-color:var(--green);background:#f0fdf4}
+.callout.warn{border-color:var(--warn);background:#fffbeb}
+.callout.mcp{border-color:var(--mcp);background:#f0fdf4}
+.callout strong{display:block;margin-bottom:3px}
+
+/* DECISION RULE */
+.rules{display:flex;flex-direction:column;gap:7px;margin:10px 0}
+.rule{display:flex;gap:10px;padding:8px 12px;border:1px solid var(--border);
+  border-radius:6px;font-size:12.5px;align-items:flex-start}
+.rule-num{font-weight:800;font-size:14px;color:var(--accent);flex-shrink:0;
+  width:22px;text-align:center;margin-top:1px}
+
+footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
+  text-align:center;font-size:11px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="doc-header">
+  <div class="badge">Master Navigation · 19.5-Month · Updated with MCP + Context Forge + Zero-Trust Hardening Sprint</div>
+  <h1>How to Navigate the Complete Learning Path</h1>
+  <p>Every topic, every week, in exact execution order — DevOps Projects P1–25 · AI-Roadmap Phases 1–6 · MCP servers · IBM Context Forge · Zero-Trust Hardening Sprint (ADR-008–016) · Skills Coverage G1–G7 · 3 certs · 3 capstones · 3 blog posts · job applications</p>
+</div>
+
+<div class="callout warn">
+  <strong>What changed in this revision</strong>
+  A simulated Staff-level architecture panel reviewed the Zero-Trust AI Execution Flow (ADR-005/006/007) and identified 8 concrete gaps: semantic authorization (Gap A), workload identity / confused deputy (Gap B), unmeasured latency (Gap C), no output-side DLP (Gap D), no audit correlation (Gap E), no offline/air-gapped delivery story (Gap F), no incumbent-PAM federation story (Gap G), and no CAB-compatible GitOps story (Gap H). IBM Bob generated ADR-008 through ADR-015, two FDE client-simulation scenarios, one compliance runbook, and a latency benchmark harness to close them — all of which already exist in the repo but were <strong>not yet sequenced into this guide</strong>. This revision inserts a 6-week <strong>Zero-Trust Hardening Sprint</strong> immediately after the Context Forge milestone (end of Month 12) and before GPU Fleet Ops (Month 13). Total plan length moves from 18 to <strong>~19.5 months</strong>. Every "Month N" label from the original Month 13 onward now happens roughly 1.5 months later than the label states — treat the numbers below as <strong>sequence position</strong>, not literal calendar months, past that point.
+</div>
+
+
+<div class="how-box">
+  <strong>How to use this document</strong>
+  <ol>
+    <li><strong>Start here, always.</strong> This is the single source of truth for sequencing. All other appendices (A–I) are referenced from within it — you never need to open them speculatively.</li>
+    <li><strong>Two parallel tracks, never swapped.</strong> Weekday evenings → AI-Roadmap. Saturdays → DevOps Projects. Sundays → writing (ADRs, blog posts, READMEs).</li>
+    <li><strong>Every row has a gate.</strong> Do not advance to the next step until the gate for the current step passes. A gate is always a running system or a committed file — never just "I understand it."</li>
+    <li><strong>MCP (Months 11–12) and Context Forge (Month 12) are placed exactly where they appear in this guide.</strong> They are not optional extras — they are the capstone that converts the portfolio from "DevOps with AI sprinkled in" to "AI Platform Engineer who built a production AI gateway."</li>
+    <li><strong>The Zero-Trust Hardening Sprint (Hardening Wk H1–H6) is not optional either.</strong> It sits immediately after Context Forge and before GPU Fleet Ops. Skipping it leaves the portfolio at "built a working MCP demo" — the hardening sprint is what proves the demo survives adversarial review, which is the exact bar a Staff-level panel holds you to.</li>
+    <li><strong>Open the full timeline HTML</strong> (<code>unified-learning-path-devops-ai-platform-18-month-realistic-timeline.html</code>) for the step-by-step detail of each block. This guide gives you the map; that document gives you the turn-by-turn directions.</li>
+  </ol>
+</div>
+
+
+<h2>The Two Parallel Tracks</h2>
+<div class="twin">
+  <div class="twin-card devops">
+    <h3>Track A — DevOps Projects (P1–25)</h3>
+    <ul>
+      <li>When: Saturdays, 4 hrs each</li>
+      <li>Repo: <code>DevOps-Projects-End-to-End/</code></li>
+      <li>Purpose: Closes CI/CD, IaC, service-mesh, chaos, compliance gaps that the AI lab alone does not cover</li>
+      <li>P1–6: Re-run + enhance on fresh KinD cluster (Months 1–4)</li>
+      <li>P7–25: New builds in priority order</li>
+    </ul>
+  </div>
+  <div class="twin-card ai">
+    <h3>Track B — AI-Roadmap Lab (Phases 1–6)</h3>
+    <ul>
+      <li>When: Weekday evenings, 1.5 hrs/night + Sundays writing</li>
+      <li>Repo: <code>ai-platform-lab/</code></li>
+      <li>Purpose: The primary portfolio artefact. This is the GitHub repo that gets sent to every hiring manager.</li>
+      <li>Culminates in a live AI assistant consuming real infrastructure telemetry via MCP + Context Forge gateway</li>
+    </ul>
+  </div>
+</div>
+
+
+<div class="legend">
+  <div class="leg"><div class="ld" style="background:var(--rerun)"></div>Re-run P1–6</div>
+  <div class="leg"><div class="ld" style="background:#ca8a04"></div>DevOps new work</div>
+  <div class="leg"><div class="ld" style="background:var(--ai)"></div>AI-Roadmap</div>
+  <div class="leg"><div class="ld" style="background:var(--cert)"></div>Cert exam</div>
+  <div class="leg"><div class="ld" style="background:var(--mcp)"></div>MCP servers</div>
+  <div class="leg"><div class="ld" style="background:var(--forge)"></div>Context Forge gateway</div>
+  <div class="leg"><div class="ld" style="background:#9333ea"></div>Zero-Trust Hardening Sprint</div>
+  <div class="leg"><div class="ld" style="background:var(--bridge)"></div>Career actions</div>
+</div>
+
+
+<h2>Full 18-Month Week-by-Week Sequence</h2>
+<p style="color:var(--muted);font-size:12px;margin-bottom:8px">Read left to right within each row — DevOps Saturday work and AI weekday evening work happen in the same calendar weeks. Cert rows are highlighted.</p>
+
+<table class="seq-table">
+<tr>
+  <th style="width:70px">Month / Wk</th>
+  <th style="width:38%">Track A — DevOps Projects (Saturdays)</th>
+  <th>Track B — AI-Roadmap Lab (Weekday evenings)</th>
+  <th style="width:100px">Gate / Cert</th>
+</tr>
+
+
+<tr>
+  <td class="wk">Pre-start</td>
+  <td colspan="2"><strong>One-time bootstrap:</strong> OrbStack + KinD clusters (ai-platform-lab + devops-lab) · ArgoCD · Ollama llama3.2:3b · Go 1.22 · kubebuilder · cosign · trivy · Python 3.12 via uv. Both clusters accessible in <code>kubectl config get-contexts</code>.</td>
+  <td><span class="pill pc">Both clusters up</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 1<br />Wk 1–2</td>
+  <td><span class="pill pr">P1 Re-run</span> Flask + Docker + CI/CD · multi-stage Dockerfile · Trivy scan · SBOM via Syft · base image digest pinning<br /><br /><span class="pill pr">P2 Re-run</span> Cosign keyless signing · SLSA attestation · Hadolint · multi-arch buildx (arm64+amd64)</td>
+  <td><span class="pa pill">AI Wk 1–3</span> Terraform multi-env (<code>environments/dev|prod/</code>) · ArgoCD App-of-Apps running · GitHub Actions CI gate (hadolint + ruff + checkov). Open <code>appendix-h</code> §2.</td>
+  <td><span class="pill pr">CI green P1+P2</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 2<br />Wk 3–6</td>
+  <td><span class="pill pr">P3 Re-run</span> K8s + Helm chart (values-dev/prod) · Prometheus/Grafana · SLO burn-rate alert (99.9% availability) · OTel auto-instrumentation to Jaeger</td>
+  <td>Continue <span class="pa pill">AI Wk 1–3</span> → App-of-Apps all platform apps managed<br /><br /><span class="pa pill">AI Wk 4–6 start</span> Python async · <code>appendix-b</code> Python track Wk 1–4 · extend <code>ttft_benchmark.py</code> with <code>--concurrency</code> + <code>--requests</code> → p50/p95/p99 CSV</td>
+  <td><span class="pill pr">Helm chart installs clean</span></td>
+</tr>
+
+
+<tr class="cert">
+  <td class="wk">Month 3<br />Wk 7–10</td>
+  <td><span class="pill pr">P4 Re-run</span> Microservices (api + db Flask) · EFK stack · Consul via Helm · Vault dev mode · Vault Agent Injector · NetworkPolicies default-deny-all · OTel baggage correlation ID</td>
+  <td>Continue <span class="pa pill">AI Wk 4–6</span> · TTFT benchmark outputs real CSV<br /><br /><strong>Last 2 weeks of Month 3:</strong> NCA-AIIO study sprint · <code>appendix-f</code> NCA-AIIO section · book exam · sit exam</td>
+  <td><span class="pill pc">⭐ NCA-AIIO certified</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 4<br />Wk 11–14</td>
+  <td><span class="pill pr">P5 Re-run</span> Multi-window burn-rate alerts (14× 1h, 6× 6h) · runbook URL annotations · blameless postmortem doc<br /><br /><span class="pill pr">P6 Re-run</span> OTel + Jaeger + Grafana Tempo (dual backend) · tail-based sampling · exemplars linking metrics to trace IDs</td>
+  <td><span class="pa pill">AI Wk 7–9</span> <code>mock-dcgm-exporter.py</code> wired to Prometheus · golden signals Grafana dashboard · KEDA second trigger (<code>vllm_gpu_cache_usage_perc &gt; 0.75</code>) · load test → KEDA scales 1→3+ replicas · screen-record</td>
+  <td><span class="pill pr">P1–6 all green, cluster clean</span></td>
+</tr>
+
+
+<tr>
+  <td colspan="4" style="background:var(--code-bg);color:var(--code-text);font-weight:700;padding:6px 10px;font-size:11px;letter-spacing:.05em">
+    PHASE 2 · DEVOPS DEEP GAPS — Months 5–7 · P7–10 Saturdays · AI-Roadmap evenings
+  </td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 5<br />Wk 15–18</td>
+  <td><span class="pill pd">P7</span> Terraform IaC at scale · modules (VPC + K8s cluster) · remote state S3/MinIO + DynamoDB locking · Checkov + tfsec in CI · PR-based <code>terraform plan</code> comment</td>
+  <td><span class="pa pill">AI Wk 10–12</span> Argo Rollouts canary → "bad" image → AnalysisTemplate auto-rollback recorded · Vault sidecar annotations → <code>/vault/secrets/</code> verified · ADR-002 updated<br /><strong>Go foundations (G3):</strong> tour.golang.org + gobyexample.com · write concurrent Ollama poller in <code>platform/controller/cmd/poller/main.go</code> · run <code>go test -race ./...</code> to detect data races · step through a goroutine deadlock with <code>dlv debug ./cmd/manager</code> · expose a <code>/debug/pprof</code> endpoint and capture a 30-second CPU profile</td>
+  <td><span class="pill pd">Terraform remote state + locking</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 6<br />Wk 19–22</td>
+  <td><span class="pill pd">P8</span> ArgoCD App-of-Apps on Flask microservices · Argo Rollouts canary 10%→50%→100% · Prometheus AnalysisTemplate gate · PR-based Git promotion dev→prod</td>
+  <td><span class="pa pill">AI Wk 13–15</span> PagedAttention deep dive → 500-word explanation in ADR-001 (capacity formula by heart) · multi-burn-rate SLO alert rules in <code>custom-rules.yaml</code> · fire both artificially · verify in Alertmanager</td>
+  <td><span class="pill pd">Flask canary auto-rollback on error rate breach</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 7<br />Wk 23–26</td>
+  <td><span class="pill pd">P10</span> Supply chain security on Flask · Syft SBOM · Cosign SLSA attestation · Kyverno admission (enforce signed images, non-root, resource limits) · Falco runtime rules (exec into container alert)</td>
+  <td><span class="pa pill">AI Wk 16–18</span> Python k8s client watch loop for OOMKilled events · KServe InferenceService deployed → prediction via curl · Kueue ClusterQueue + 3 LocalQueues + test Job admitted and running</td>
+  <td><span class="pill pd">Unsigned Flask image blocked at admission</span></td>
+</tr>
+
+
+<tr>
+  <td colspan="4" style="background:var(--code-bg);color:var(--code-text);font-weight:700;padding:6px 10px;font-size:11px;letter-spacing:.05em">
+    PHASE 3 · AI INFRASTRUCTURE SPECIALISATION — Months 8–12 · AI-Roadmap primary · DevOps P9/11/12/13/14 Saturdays
+  </td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 8<br />Wk 27–30</td>
+  <td><span class="pill pd">P9</span> Istio service mesh · mTLS PeerAuthentication · VirtualService traffic shift · Kiali mesh graph (3–4 Saturdays)</td>
+  <td><span class="pa pill">AI Wk 19–21</span> kubebuilder init + create api → <code>make build</code> + <code>make install</code> pass · OTel distributed traces in Grafana Tempo for a single RAG request · Qdrant deployed + Argo Workflow ingestion pipeline completes</td>
+  <td><span class="pill pd">mTLS between Flask services enforced</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 9<br />Wk 31–34</td>
+  <td><span class="pill pd">P11</span> LitmusChaos pod-kill + network-partition · blameless postmortem · Velero backup/restore<br /><br /><span class="pill pd">P12</span> PostgreSQL StatefulSet + Strimzi Kafka + Debezium CDC (lower priority — evenings if ahead)</td>
+  <td><span class="pa pill">AI Wk 22–24</span> LangFuse self-hosted → 50 traces with token counts · GPU cost attribution Grafana dashboard per-team · <strong>Capstone 1 README committed</strong> · <strong>Blog post 1 published</strong> (dev.to — AI Platform Engineer portfolio intro)</td>
+  <td><span class="pill pa">Capstone 1 + Blog 1 live</span></td>
+</tr>
+
+
+<tr class="cert">
+  <td class="wk">Month 10<br />Wk 35–38</td>
+  <td><span class="pill pd">P12</span> (continue if not finished) · PostgreSQL + Kafka CDC</td>
+  <td><span class="pa pill">AI Wk 25–26</span> CRC install on M4 Max · RHOAI operator via OperatorHub · Jupyter workbench running<br /><span class="pa pill">AI Wk 26</span> Full EX267 practice loop: Jupyter → Elyra pipeline → KServe deploy, timed to under 45 min. Book exam.<br /><span class="pa pill">AI Wk 27</span> Sit EX267</td>
+  <td><span class="pill pc">⭐ EX267 certified → IBM w3 profile updated immediately</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 11<br />Wk 39–41<br />(first half)</td>
+  <td><span class="pill pd">P13</span> AIOps foundations · anomaly detection with scikit-learn/Prophet on Prometheus metrics · deploy as Flask microservice · KEDA-triggered alert enrichment</td>
+  <td><span class="pa pill">AI Wk 28–30</span> Zero-trust hardening of AI lab:<br />Wk 28: Consul intentions — break one, verify blocked, restore<br />Wk 29: Vault PKI → cert-manager → auto-rotation verified in Prometheus cert-expiry metric<br />Wk 30: <code>terraform/boundary.tf</code> → <code>boundary connect kube</code> working. No static kubeconfig. ADR-005 updated.</td>
+  <td><span class="pill pa">Boundary JIT verified, Vault PKI rotation working</span></td>
+</tr>
+
+
+<tr class="mcp-row">
+  <td class="wk">Month 11<br />Wk 42–43<br />(second half)</td>
+  <td>Continue <span class="pill pd">P13</span> · Wk 42: Kyverno unsigned image blocked + "require-resource-limits" policy · Falco all 5 rules triggered + 1 new custom rule written (Kyverno/Falco applied to AI lab workloads)</td>
+  <td>
+    <span class="pm pill">MCP Phase 6 · Wk 1–2</span><br />
+    <strong>Read first:</strong> <code>docs/curriculum/phase6-mcp-ai-assistant.md</code> — full document before writing any code.<br /><br />
+    <strong>G1 prerequisite (run before Wk 42):</strong> Execute <code>scripts/examples/agent-tool-loop.py</code> end-to-end — this proves the Anthropic SDK tool-use loop works in your environment and that you understand the <code>tool_use</code> / <code>tool_result</code> message cycle before you build the MCP transport layer. Gate: the script completes at least one round-trip tool call without errors.<br /><br />
+    <strong>Wk 42 (Phase 6 Wk 1):</strong> MCP spec at modelcontextprotocol.io/specification · write 20-line <code>get_current_time</code> FastMCP server · verify raw SSE with <code>curl -N -H "Accept: text/event-stream"</code> · decode JSON-RPC frames manually (no library abstraction)<br /><br />
+    <strong>Wk 43 (Phase 6 Wk 2):</strong> Deploy <code>mcp-prometheus</code> pod · execute raw <code>tools/call</code> via curl against TTFT p99 PromQL — no LLM yet · verify structured JSON response
+  </td>
+  <td><span class="pill pm">Both MCP raw curl calls returning JSON</span></td>
+</tr>
+
+
+<tr class="mcp-row">
+  <td class="wk">Month 12<br />Wk 44–45</td>
+  <td><span class="pill pd">P14</span> Self-healing system · KEDA + custom operator + automated runbook execution (mirrors <code>scripts/remediate/</code> in AI lab)</td>
+  <td>
+    <span class="pm pill">MCP Phase 6 · Wk 3–4</span><br />
+    <strong>Wk 44 (Phase 6 Wk 3):</strong> Deploy <code>mcp-kubernetes</code> pod · verify read-only RBAC · attempt write tool call → confirm 403 at K8s API layer (not MCP layer) — this is the defence-in-depth proof. ADR-006 written and merged.<br /><br />
+    <strong>Wk 45 (Phase 6 Wk 4):</strong> Deploy <code>ai-assistant</code> client pod · end-to-end two-server tool call: "What is TTFT p99 and how many replicas are ready?" → must use both MCP servers in single turn
+  </td>
+  <td><span class="pill pm">403 proof committed. E2E two-server call working.</span></td>
+</tr>
+
+
+<tr class="mcp-row">
+  <td class="wk">Month 12<br />Wk 46–47</td>
+  <td>Continue <span class="pill pd">P14</span> · complete self-healing demo recorded</td>
+  <td>
+    <span class="pm pill">MCP Phase 6 · Wk 5–6 (ADR-006 complete)</span><br />
+    <strong>Wk 46 (Phase 6 Wk 5):</strong> Security hardening checklist — RBAC, NetworkPolicy, Consul intentions, Vault injection, Kyverno pod security. All items in phase6-mcp-ai-assistant.md Week 5 checklist green.<br /><br />
+    <strong>Wk 47 (Phase 6 Wk 6):</strong> Instrument <code>ai_assistant_mcp_tool_calls_total</code> Counter + <code>ai_assistant_mcp_tool_call_duration_seconds</code> Histogram · Grafana panel added · end-to-end demo recorded as ASCII cast · ADR-006 finalised
+  </td>
+  <td><span class="pill pm">MCP metrics in Grafana. ASCII cast recorded.</span></td>
+</tr>
+
+
+<tr class="forge-row">
+  <td class="wk">Month 12<br />Wk 48–50<br />⭐ FORGE</td>
+  <td><span class="pill pd">P15</span> End-to-end platform capstone integrating P1–14 · developer self-service pattern · P15 README published</td>
+  <td>
+    <span class="pm pill" style="background:#d1fae5;color:#065f46">MCP Phase 6 · Wk 7 — IBM Context Forge gateway (ADR-007)</span><br />
+    <strong>Why:</strong> Inserts <code>ghcr.io/ibm/mcp-context-forge</code> as AI gateway between ai-assistant and all MCP servers. Additive layer — does not break Wk 1–6 work.<br /><br />
+    <strong>Deploy in order:</strong><br />
+    1. <code>context-forge-deployment.yaml</code> → verify Vault injects <code>/vault/secrets/context-forge-jwt.env</code><br />
+    2. <code>context-forge-networkpolicy.yaml</code> → direct ai-assistant→mcp-* paths BLOCKED<br />
+    3. <code>context-forge-catalog.yaml</code> → Bootstrap Job completes → Virtual Server <code>ai-platform-ops</code> created with tool whitelist<br />
+    4. <code>context-forge-vault.yaml</code> → service token in Vault KV at <code>secret/ai-platform/context-forge/service-token</code><br />
+    5. Verify <code>ai-assistant list_tools()</code> returns ONLY whitelisted tools (not full union)<br />
+    6. ADR-007 committed · Consul intentions updated<br /><br />
+    <strong>Also this block:</strong> Go operator Reconcile() + envtest + <code>make test</code> passing in CI<br />
+    <strong>Capstone 2 README committed · Blog post 2 published</strong> ("How IBM Context Forge changes the AI agent security model")
+  </td>
+  <td><span class="pill pm" style="background:#d1fae5;color:#065f46">Tempo per-tool traces · ADR-007 merged · Capstone 2 + Blog 2 live</span></td>
+</tr>
+
+
+<tr>
+  <td colspan="4" style="background:#9333ea;color:#fff;font-weight:700;padding:6px 10px;font-size:11px;letter-spacing:.05em">
+    PHASE 3.5 · ZERO-TRUST HARDENING SPRINT — Hardening Wk H1–H6 (~6 weeks, inserted after Month 12) · Closes ARB Gaps A–H · ADR-008–015
+  </td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H1</td>
+  <td><span class="pill pd">P16 start</span> Begin enterprise security / SOC2-PCI compliance automation on Saturdays in parallel (can overlap with hardening sprint since it's a different repo)</td>
+  <td>Read <code>docs/adr/ADR-008-zero-trust-ai-execution-flow.md</code> fully — the complete credential chain diagram. Run the 4-part "prove zero static credentials" bash sequence from ADR-008 §Verification against your own lab. Record as asciinema.<br /><br /><strong>Gap B — SPIFFE/SPIRE:</strong> Deploy <code>workloads/ai-assistant/spire-registration.yaml</code> + <code>mcp-server-sa.yaml</code> + <code>terraform/spiffe-vault-auth.tf</code>. Run all 4 ADR-009 validation commands (SVID issuance, Vault JWT auth, legacy K8s auth role now 404s, raw SA token now rejected).</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">4/4 ADR-008 proofs pass · ADR-009 4/4 validations pass</span></td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H2–H3</td>
+  <td>Continue <span class="pill pd">P16</span> · start <span class="pill pd">P17</span> zero-trust with SPIFFE/SPIRE (highest overlap with this sprint's Gap B work — do the DevOps version second, reinforcing what you just built)</td>
+  <td><strong>Gap A — OPA semantic authorization:</strong> Deploy <code>security/opa-policies/mcp-tool-authz.rego</code> + test file + <code>terraform/opa-configmap.tf</code> + patch <code>context-forge-deployment.yaml</code> with the OPA sidecar. Run <code>opa test security/opa-policies/ -v</code> (24 cases) then the live PII-block curl test from ADR-010 §Validation against your running Context Forge.</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">opa test 24/24 green · live PII query returns 403</span></td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H3</td>
+  <td>Continue <span class="pill pd">P17</span></td>
+  <td><strong>Gap C — Latency benchmarking:</strong> Install k6. Run <code>scripts/harness/boundary-vault-latency.js</code> across all 3 concurrency tiers (1/10/50 VUs). Replace every <code>TBD</code> in <code>docs/benchmarks/boundary-vault-latency-results.md</code> with real numbers from your cluster. Apply the ADR-011 lease-tuning patch (<code>default_ttl=300s</code>) to <code>terraform/vault-boundary-auth.tf</code> and justify the session-pool tier you land on.</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">Benchmark results file has real p50/p95/p99 — zero TBDs left</span></td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H4</td>
+  <td>Continue <span class="pill pd">P17</span> — apply the same Consul mTLS / micro-segmentation pattern to the DLP sidecar's NetworkPolicy</td>
+  <td><strong>Gap D — Output-side DLP:</strong> Deploy <code>workloads/ai-assistant/mcp-server-dlp-sidecar.yaml</code> (Presidio Anonymizer) + <code>security/dlp-policies/mcp-redaction-config.yaml</code>. Run all 3 ADR-012 validation steps — sidecar running, direct SSN/email redaction test, <code>mcp_dlp_redactions_total</code> visible in Prometheus.<br /><br /><strong>Gap E (start) — Audit correlation:</strong> Patch <code>context-forge-deployment.yaml</code> with <code>OTEL_PROPAGATORS</code> / <code>BOUNDARY_TRACE_HEADER</code> env vars per ADR-013.</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">SSN/email test redacted · DLP metric live in Grafana</span></td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H5</td>
+  <td>Continue <span class="pill pd">P17</span> · complete zero-trust chapter</td>
+  <td><strong>Gap E (finish):</strong> Work end-to-end through <code>docs/runbooks/RB-003-incident-audit-reconstruction.md</code> — trigger a real tool call, resolve Tempo trace_id → Boundary session_id → MinIO <code>metadata.json</code>, and the reverse direction. Target: full round trip under 5 minutes, as a recorded demo.<br /><br /><strong>Gap F — Air-gapped VPC:</strong> Run FDE-001 through the full Terraform air-gapped bootstrap: <code>scripts/fde/mirror-providers.sh</code>, <code>preload-images.sh</code>, <code>verify-airgap-bootstrap.sh</code>, against <code>terraform/backends/airgap/</code> (incl. <code>harbor.tf</code> for OCI registry) and <code>clusters/local-kind/apps/chartmuseum.yaml</code> (offline Helm charts). Zero outbound calls must be confirmed by tcpdump/Wireshark against the kind bridge interface before this gate passes.<br /><br /><strong>Gap G — PAM federation:</strong> Read FDE-002 (CyberArk brownfield) fully. Deploy <code>terraform/pam-federation/cyberark-vault-bridge.tf</code> and <code>delinea-vault-bridge.tf</code> against a mocked CCP endpoint if time allows, else write your own 1-page runbook restating the Pattern A vs Pattern B decision matrix from ADR-014 from memory.</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">RB-003 round trip &lt;5 min · air-gapped cluster boots w/ zero outbound calls</span></td>
+</tr>
+
+<tr>
+  <td class="wk">Hardening<br />Wk H6</td>
+  <td>P16+P17 wrap — both should be substantially complete by end of this week</td>
+  <td><strong>Gap H — CAB-compatible GitOps:</strong> Deploy <code>clusters/production/app-of-apps.yaml</code> (manual sync + AppProject sync windows) + <code>workloads/platform/cab-approval-hook.yaml</code> + <code>.github/PULL_REQUEST_TEMPLATE/change-request.md</code> + <code>.github/CODEOWNERS</code>. Simulate one full CAB cycle end to end: open the PR → self-approve as the board → merge → manually trigger <code>argocd app sync</code> → watch the PreSync hook block on an unapproved ticket → approve the ticket → retry → watch waves 2→3→4 proceed. Record it.<br /><br /><strong>Sprint close-out:</strong> Update the README and <code>docs/portfolio/dual-role-github-strategy.md</code> pitch to cite "8 ARB-identified gaps closed via ADR-008–016." Add the ADR-gap defence scripts to <code>docs/portfolio/interview-matrix.md</code>. Open <code>docs/curriculum/master_transition_blueprint.md</code> — verify every Gap A–H table row is complete, G1–G7 coverage matrix rows are all filled, and ADR registry 001–016 is accurate. Record a 5-minute Loom walking the full ADR-008 diagram end to end.</td>
+  <td><span class="pill" style="background:#f3e8ff;color:#6b21a8">Block→approve→proceed demo recorded · ADR-008–015 all committed</span></td>
+</tr>
+
+
+<tr>
+  <td colspan="4" style="background:var(--code-bg);color:var(--code-text);font-weight:700;padding:6px 10px;font-size:11px;letter-spacing:.05em">
+    PHASE 4 · GPU FLEET OPS + CONVERGENCE — Months 13–15 (sequence position — actually ~Month 14.5–16.5 after the hardening insert) · NCP-AIO cert · DevOps P16–20 Saturdays
+  </td>
+</tr>
+
+
+<tr class="cert">
+  <td class="wk">Month 13<br />Wk 51–54</td>
+  <td><span class="pill pf2">P16</span> Enterprise security + SOC2/PCI-DSS compliance automation<br /><br /><span class="pill pf2">P17</span> Zero-trust with SPIFFE/SPIRE + micro-segmentation (highest AI-lab overlap)</td>
+  <td><span class="pa pill">AI Wk 37–41</span><br />Wk 37: Slurm cluster on 2 free-tier VMs · <code>sbatch</code> + <code>sacct</code> working<br />Wk 38: XID metric injected → node cordoned automatically (<code>scripts/remediate/xid-node-cordon.sh</code>)<br />Wk 39: ADR-004 GPU partitioning (MIG vs MPS vs time-slicing decision matrix) written<br />Wk 40: NCP-AIO study sprint · book exam · <code>appendix-f</code> NCP-AIO section<br />Wk 41: Sit NCP-AIO</td>
+  <td><span class="pill pc">⭐ NCP-AIO certified — 6 certs total</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 14<br />Wk 55–58</td>
+  <td><span class="pill pf2">P19</span> FinOps — cost governance, GPU cost attribution (maps to AI lab dashboard)<br /><br /><span class="pill pf2">P20</span> Production operations — incident command, CAB (reinforces Sev-1 narrative)</td>
+  <td><span class="pa pill">AI Wk 42–44</span><br />Wk 42–43: Full 7-stage CI pipeline (lint→test→build→sign→scan→gitops-update→ArgoCD canary) · end-to-end demo recorded<br />Wk 44: KEDA watchdog CronJob · chaos scenario → automated recovery without human kubectl · recorded</td>
+  <td><span class="pill pa">7-stage CI demo recorded. Automated recovery demo recorded.</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 15<br />Wk 59–62</td>
+  <td><span class="pill pf2">P18</span> Multi-cloud unified control plane (lower priority, nice-to-have)</td>
+  <td><span class="pa pill">AI Wk 45–47</span><br />Wk 45–46: Portfolio polish — 10-point README checklist · <code>make up</code> from fresh clone &lt;10 min · CI badge green on all repos<br />Wk 47: <strong>Capstone 3 README</strong> (RAG pipeline) · <strong>Blog post 3</strong> published</td>
+  <td><span class="pill pa">3 capstones · 3 blogs · <code>make up</code> &lt;10 min</span></td>
+</tr>
+
+
+<tr>
+  <td colspan="4" style="background:var(--code-bg);color:var(--code-text);font-weight:700;padding:6px 10px;font-size:11px;letter-spacing:.05em">
+    PHASE 5 · IBM TRANSFER + EXTERNAL APPLICATIONS — Months 16–18
+  </td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 16<br />Wk 63–66</td>
+  <td><span class="pill pf2">P21</span> Multi-tenancy + SaaS patterns (continue on Saturdays alongside interviews)</td>
+  <td><span class="pb2 pill">Career</span> Open <code>appendix-g</code> §8 IBM 6-step transfer playbook · identify 2 RHOAI/watsonx engineers on IBM Slack · send coffee chat message (verbatim from §8) · inform current manager<br />Practice Script C ("Design multi-tenant GPU inference platform") timed — target under 8 min without notes · record yourself<br />Resume updated with 3-sentence AI platform summary from <code>appendix-g</code> §6</td>
+  <td><span class="pill pb2">2 IBM coffee chats booked. Script C &lt;8 min.</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 17<br />Wk 67–70</td>
+  <td><span class="pill pf2">P22–25</span> Data governance + multi-cluster + enterprise logging/metrics (ongoing — strengthen 2nd/3rd round interviews)</td>
+  <td><span class="pb2 pill">Career</span> Submit KubeCon CFP (from <code>appendix-g</code> §9 — one of 2 talk proposals)<br />Send 5–7 external applications · GitHub repo linked in every application · BATNA floor: ₹52L + ₹69L unvested RSUs</td>
+  <td><span class="pill pb2">CFP submitted. 5+ applications sent. 2 recruiter calls booked.</span></td>
+</tr>
+
+
+<tr>
+  <td class="wk">Month 18<br />Wk 71–74</td>
+  <td>Continue P22–25 in parallel with interviews</td>
+  <td><span class="pb2 pill">Active interviews</span> + IBM w3 internal transfer application submitted<br />RHOAI Platform Engineering / watsonx.ai Infrastructure SRE team applications active<br />External: Series B–D US remote startups, Databricks, Hugging Face</td>
+  <td><span class="pill pb2">IBM w3 transfer submitted. Offer negotiation active.</span></td>
+</tr>
+</table>
+
+
+<h2>When to Open Each Reference Document</h2>
+<div class="app-grid">
+  <div class="app-card">
+    <div class="app-title">Appendix A — GPU Inference Math Primer</div>
+    <ul>
+      <li>PagedAttention capacity formula</li>
+      <li>TTFT / TPS / KV-cache golden signals</li>
+    </ul>
+    <div class="app-when">Open: Month 3 (Wk 4–6) alongside TTFT benchmark harness. Again: Month 6 (Wk 13–14) for ADR-001 500-word explanation.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix B — Python &amp; Go Learning Paths</div>
+    <ul>
+      <li>Python async, httpx, prometheus_client</li>
+      <li><strong>G1:</strong> Anthropic SDK tool-use loop — <code>scripts/examples/agent-tool-loop.py</code> (run before Month 11 MCP work)</li>
+      <li>Go concurrency, channels, goroutines</li>
+      <li><strong>G3:</strong> Go debugging — <code>go test -race ./...</code>, <code>dlv debug ./cmd/manager</code>, <code>/debug/pprof</code> CPU profiles</li>
+      <li><strong>G4:</strong> Python profiling — <code>py-spy top --pid &lt;pid&gt;</code>, <code>pprof</code> HTTP endpoint flame graphs</li>
+    </ul>
+    <div class="app-when">Open: Month 3 (Python Week 1–4) + Month 5 (Go foundations, tour.golang.org sequence + G3 debugging tools) + Month 11 Wk 42 (G1 agent loop — must run before MCP client code).</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix C — Zero-Trust Supply Chain Security Lab</div>
+    <ul>
+      <li>Cosign + Kyverno on inference images</li>
+      <li>Falco rules for AI workloads</li>
+      <li>RHACS policy integration</li>
+    </ul>
+    <div class="app-when">Open: Month 11 (Wk 42–43) after P10 — applying same techniques to AI lab. Kyverno + Falco on inference namespace.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix D — Capstone 2: Multi-Tenant Inference</div>
+    <ul>
+      <li>Kueue ClusterQueue floor guarantees</li>
+      <li>Chaos experiment design</li>
+      <li>Capstone 2 README template</li>
+    </ul>
+    <div class="app-when">Open: Month 12 (Wk 48–50) when writing Capstone 2 README. Chaos experiment for blog post 2 narrative.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix E — Vector DB &amp; RAG Pipeline Lab</div>
+    <ul>
+      <li>Qdrant deployment + ingestion pipeline</li>
+      <li>OTel tracing across RAG stages</li>
+      <li>LangFuse trace analysis</li>
+    </ul>
+    <div class="app-when">Open: Month 8–9 (Wk 19–24) — Qdrant + OTel + LangFuse steps. Again: Month 15 (Wk 47) for Capstone 3 README.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix F — Certification Mapping &amp; Exam Prep</div>
+    <ul>
+      <li>NCA-AIIO study plan (Month 3)</li>
+      <li>EX267 practice loop (Month 10)</li>
+      <li>NCP-AIO study plan (Month 13)</li>
+    </ul>
+    <div class="app-when">Open: 2 weeks before each cert exam. The three sections are independent — only open the relevant cert section when its exam is approaching.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix G — Portfolio &amp; Interview Readiness</div>
+    <ul>
+      <li>Scripts A–D (system design answers)</li>
+      <li>IBM 6-step transfer playbook (§8)</li>
+      <li>KubeCon CFP proposals (§9)</li>
+      <li>Resume 3-sentence summary (§6)</li>
+    </ul>
+    <div class="app-when">Open: Month 16 (IBM coffee chats). Month 17 (CFP + external applications). Scripts A–D: practice from Month 14 onward — 15 min/week.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix H — DevOps Rebranding Strategy</div>
+    <ul>
+      <li>7-stage CI pipeline spec</li>
+      <li>PromQL burn-rate templates</li>
+      <li>Terraform multi-env patterns</li>
+    </ul>
+    <div class="app-when">Open: Month 1 (§2 for Terraform/ArgoCD). Month 4 (burn-rate PromQL). Month 14 (7-stage CI pipeline build).</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">Appendix I — Master Learning Sequence (original)</div>
+    <ul>
+      <li>AI-Roadmap-only detailed week tables</li>
+      <li>Original 4-phase AI curriculum</li>
+    </ul>
+    <div class="app-when">This document supersedes Appendix I for sequencing. Use Appendix I only if you need the granular day-by-day AI lab breakdown for a specific phase.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">ADR-008–016 — Zero-Trust Hardening Bundle + Cloud ADR</div>
+    <ul>
+      <li>008: full credential chain + auditor proof</li>
+      <li>009: SPIFFE/SPIRE workload identity</li>
+      <li>010: OPA semantic authorization</li>
+      <li>011: latency benchmarking + lease reuse</li>
+      <li>012: output-side DLP (Presidio)</li>
+      <li>013: OTel trace correlation</li>
+      <li>014: PAM federation (CyberArk/Delinea)</li>
+      <li>015: CAB-compatible GitOps</li>
+      <li><strong>016:</strong> cloud vs on-prem deployment strategy (<code>docs/adr/ADR-016-cloud-vs-onprem-deployment-strategy.md</code>)</li>
+    </ul>
+    <div class="app-when">Open: Hardening Wk H1–H6 (ADR-008–015), one per gap, in Phase 3.5 table order. ADR-016 opens at P18/portfolio-polish phase (Sr SA / cloud FDE targeting only).</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">docs/scenarios/FDE-001 &amp; FDE-002</div>
+    <ul>
+      <li>FDE-001: air-gapped/restricted VPC deployment</li>
+      <li>FDE-002: CyberArk brownfield integration</li>
+    </ul>
+    <div class="app-when">Open: Hardening Wk H5. These simulate the exact FDE constraint an ex-Palantir panel will grill you on — greenfield assumptions don't survive a real client network.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">RB-003 &amp; boundary-vault-latency-results.md</div>
+    <ul>
+      <li>RB-003: incident audit reconstruction runbook</li>
+      <li>Latency benchmark results template</li>
+    </ul>
+    <div class="app-when">Open: Hardening Wk H3 (latency) and Wk H5 (audit runbook). These are the two artifacts that convert claims into numbers — fill in every TBD before an interview, not after.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">docs/portfolio/dual-role-github-strategy.md &amp; interview-matrix.md</div>
+    <ul>
+      <li>Platform Engineer vs FDE README pitch text</li>
+      <li>Company-by-company interview prep matrix</li>
+    </ul>
+    <div class="app-when">Open: Month 16 (README rewrite) and Month 14 onward (interview-matrix system design drills — these map directly to the ARB gap questions).</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">phase6-mcp-ai-assistant.md (lab doc, not appendix)</div>
+    <ul>
+      <li>MCP spec reading order</li>
+      <li>Week 1–6 detailed deliverables</li>
+      <li>Week 7: Context Forge deployment sequence</li>
+      <li>IBM translation map + interview Q&amp;A</li>
+    </ul>
+    <div class="app-when">Open: Month 11 Wk 42 — read it fully before writing any MCP code. It is the hands-on curriculum for all of Phase 6 including Context Forge.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">docs/curriculum/master_transition_blueprint.md — Gap A–H module table + G1–G7 skills coverage + ADR registry</div>
+    <ul>
+      <li>Gap A–H module table: maps each gap to its ADR, Terraform file, K8s manifest, validation command, and the exact interview question it closes</li>
+      <li><strong>G1–G7 skills coverage matrix:</strong> closes LLM SDK (G1), GHAS/Dependabot (G2/G5), Go debugging (G3), Python profiling (G4), Ansible (G6), and cloud ADR (G7) gaps identified by the 5-role skills audit</li>
+      <li>ADR registry 001–016: one-line description, decision date, and status for every ADR in the repo</li>
+      <li>Resume Positioning Statement (Band 8 → Band 9 / FDE framing)</li>
+      <li>The "You Are Ready to Apply" pre-flight checklist (cross-references the 9-item checklist in this guide)</li>
+    </ul>
+    <div class="app-when">Open: start of Hardening Wk H1 as a sprint brief, and again at Hardening Wk H6 close-out to verify every gap row is filled in and all G1–G7 coverage rows are complete. The Gap A–H table is the single most efficient interview-prep reference for the ARB-gap questions — each row is a complete verbal answer in bullet form.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">docs/portfolio/interview-matrix.md — ADR-gap defence section</div>
+    <ul>
+      <li>10-company matrix: Anthropic, Databricks, Palantir, Scale AI, IBM Band 9, and 5 others — per-company gap emphasis and likely probe questions</li>
+      <li>5 Staff-level system design questions with model answers mapped to ADR-008–015 evidence</li>
+      <li>ARB gap defence scripts: how to answer "why OPA, not just tool-name RBAC," "how does this survive a CAB process," "what's your latency number," and "you have CyberArk — why add Vault?"</li>
+    </ul>
+    <div class="app-when">Open: Hardening Wk H6 (sprint close-out) and then weekly during Month 14–16 interview prep. The ADR-gap defence section maps one-to-one with every hard question identified in the ARB review.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">G1–G7 Skills Coverage Module (master_transition_blueprint.md §G1–G7)</div>
+    <ul>
+      <li><strong>G1:</strong> Anthropic SDK tool-use loop — <code>scripts/examples/agent-tool-loop.py</code></li>
+      <li><strong>G2:</strong> GitHub Advanced Security (GHAS) — Dependabot + CodeQL + secret scanning in CI</li>
+      <li><strong>G3:</strong> Go debugging — <code>go test -race</code>, <code>dlv</code>, <code>pprof</code></li>
+      <li><strong>G4:</strong> Python profiling — <code>py-spy</code>, <code>pprof</code> HTTP endpoint, token cost estimation</li>
+      <li><strong>G5:</strong> GHAS CI gates — <code>.github/workflows/codeql.yml</code>, <code>dependabot.yml</code>, <code>secret_scanning.yml</code></li>
+      <li><strong>G6:</strong> Ansible — <code>playbooks/configure-inference-node.yaml</code>, <code>rotate-vault-approle.yaml</code>, <code>.github/workflows/ci-ansible.yml</code></li>
+      <li><strong>G7:</strong> Cloud/EKS ADR — <code>docs/adr/ADR-016-cloud-vs-onprem-deployment-strategy.md</code>, <code>terraform/backends/cloud/eks-ephemeral.tf</code></li>
+    </ul>
+    <div class="app-when">See blueprint §G1–G7 for exact timing per gap. Quick reference: G1 runs at Month 11 Wk 42 (before MCP code) · G3 runs at Month 5 Go foundations · G5/G6 are CI-only (P16/P17 Saturdays, IBM SRE/SA track only) · G7 opens at P18 portfolio-polish phase (Sr SA / cloud FDE only).</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">G5 — GitHub Advanced Security (GHAS)</div>
+    <ul>
+      <li><code>.github/workflows/codeql.yml</code> — CodeQL SAST on every PR, Python + Go queries</li>
+      <li><code>.github/dependabot.yml</code> — pip + gomod weekly updates, auto-assign to self</li>
+      <li><code>.github/secret_scanning.yml</code> — custom Vault token + IBM API key patterns</li>
+    </ul>
+    <div class="app-when">Open: P16/P17 Saturdays (IBM SRE / Sr SA track only — skip if targeting pure FDE). These activate once the platform is stable enough that dependency drift is a real risk rather than a distraction. Gate: all three workflows green on a real PR before the checklist item closes.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">G6 — Ansible Playbooks</div>
+    <ul>
+      <li><code>playbooks/configure-inference-node.yaml</code> — idempotent RHEL 9 inference node bootstrap (NVIDIA driver, containerd, Vault agent)</li>
+      <li><code>playbooks/rotate-vault-approle.yaml</code> — automated AppRole secret-id rotation via Vault API</li>
+      <li><code>.github/workflows/ci-ansible.yml</code> — ansible-lint gate on every PR touching <code>playbooks/</code></li>
+    </ul>
+    <div class="app-when">Open: P16/P17 Saturdays alongside GHAS. Relevant primarily for IBM SRE and Sr SA roles (RHEL + Ansible is standard IBM fleet tooling). Run <code>ansible-lint playbooks/</code> locally before pushing — the CI gate runs the same check. Skip if exclusively targeting FDE roles at AI-native vendors.</div>
+  </div>
+  <div class="app-card">
+    <div class="app-title">G7 — Cloud Deployment ADR &amp; EKS Ephemeral Sandbox</div>
+    <ul>
+      <li><code>docs/adr/ADR-016-cloud-vs-onprem-deployment-strategy.md</code> — decision matrix: local kind vs EKS ephemeral vs GKE Autopilot, with cost and compliance rationale</li>
+      <li><code>terraform/backends/cloud/eks-ephemeral.tf</code> — TTL-bound EKS ephemeral sandbox stub (Spot node groups, auto-teardown on TTL expiry)</li>
+    </ul>
+    <div class="app-when">Open: P18 / portfolio-polish phase. Required for Sr SA and cloud FDE roles that will probe "how does this scale beyond your laptop." Fill in all TBD cost placeholders in ADR-016 with real Spot pricing numbers before any interview where cloud deployment is on the job description.</div>
+  </div>
+</div>
+
+
+<h2>Why MCP and Context Forge Land in Months 11–12 (Not Earlier)</h2>
+<div class="callout mcp">
+  <strong>Prerequisite chain — every item below MUST be done before touching MCP code</strong>
+  MCP is a protocol layer on top of a running platform. If the platform underneath is not stable, you will debug the wrong thing. The prerequisite chain is non-negotiable:<br /><br />
+  Month 1–4: Kubernetes + Helm + Prometheus/Grafana + OTel basics (P1–6 re-run) →<br />
+  Month 4: Mock DCGM exporter + KEDA dual trigger running (AI Wk 7–9) →<br />
+  Month 5–7: Vault sidecar injection verified + Argo Rollouts canary + KServe + Kueue (AI Wk 10–18) →<br />
+  Month 7: Kyverno + Falco on Flask first (P10) — before applying to AI workloads →<br />
+  Month 8–9: kubebuilder + RAG pipeline + LangFuse running (AI Wk 19–24) →<br />
+  Month 10: EX267 certified — RHOAI ServingRuntime patterns understood →<br />
+  Month 11 (Wk 28–30): Consul mTLS + Vault PKI + Boundary JIT all running in AI lab →<br />
+  <strong>NOW you are ready for MCP (Month 11 Wk 42) — the entire zero-trust layer is your MCP security model.</strong>
+</div>
+
+<div class="callout mcp" style="border-color:var(--forge);background:#ecfdf5">
+  <strong>Context Forge (Week 7) lands AFTER Weeks 1–6 are complete — not before</strong>
+  Context Forge is an additive governance layer. You must first prove you can build the direct MCP topology (ADR-006) — raw JSON-RPC calls, tool call routing, RBAC isolation, security hardening, and MCP metrics. Only after that working baseline exists does inserting the Context Forge gateway (ADR-007) make sense. Trying to learn Context Forge before understanding raw MCP is like learning a load balancer before understanding HTTP.
+</div>
+
+
+<h2>The Three Rules That Protect This Timeline</h2>
+<div class="rules">
+  <div class="rule">
+    <div class="rule-num">1</div>
+    <div><strong>AI-Roadmap is weekday evenings. DevOps Projects is Saturdays. Never swap this.</strong> The AI-Roadmap has three hard cert deadlines: NCA-AIIO Month 3, EX267 Month 10, NCP-AIO Month 13. Missing these slips the application timeline by months. DevOps projects are flexible — a Saturday can slip without consequence. Protect the AI-Roadmap schedule at all costs.</div>
+  </div>
+  <div class="rule">
+    <div class="rule-num">2</div>
+    <div><strong>Do the DevOps version of each skill before the AI-Roadmap version.</strong> P10 (Kyverno on Flask) before Appendix C (Kyverno on inference workloads). P8 (Argo Rollouts on Flask) before the AI lab's AnalysisTemplate. P6 (OTel on Flask) before the RAG pipeline. First exposure on simple code, second on complex AI workloads. You get depth without confusion.</div>
+  </div>
+  <div class="rule">
+    <div class="rule-num">3</div>
+    <div><strong>Every week has exactly one committed output.</strong> A week of reading with no GitHub commit is a week with no evidence. Hiring managers evaluate your repo, not your memory. If a week is too busy to build, commit at minimum a doc: an ADR update, a runbook, a blog post draft.</div>
+  </div>
+</div>
+
+
+<h2>You Are Ready to Apply When All 12 Are True</h2>
+<div class="callout success">
+  <strong>Target: end of sequence-position Month 17 (≈ calendar Month 18.5 after the hardening insert)</strong>
+  <br />
+  ☐  <strong>NCA-AIIO + EX267 + NCP-AIO</strong> all certified (6 certs total: CKA + CKS + Vault Pro + these 3)<br />
+  ☐  <strong>DevOps P1–15</strong> all complete with green CI<br />
+  ☐  <strong><code>make up</code></strong> from fresh clone works end-to-end in under 10 minutes on AI lab<br />
+  ☐  <strong>3 capstone READMEs</strong> committed (Capstone 1: inference platform · Capstone 2: multi-tenant + MCP + Context Forge · Capstone 3: RAG pipeline)<br />
+  ☐  <strong>3 blog posts live</strong> (Blog 2 must cover Context Forge AI governance — this is the IBM interview story)<br />
+  ☐  <strong>System design Script C</strong> delivered under 8 min without notes<br />
+  ☐  <strong>ADR-007 Context Forge</strong> committed + Bootstrap Job PostSync verified + Grafana Tempo per-tool-call traces visible<br />
+  ☐  <strong>ADR-008–016 all committed</strong> — zero static credentials proven live, OPA 28/28 tests green, real (non-TBD) latency numbers, DLP redaction verified, RB-003 audit round-trip &lt;5 min, one FDE scenario run end-to-end, one CAB cycle demo recorded<br />
+  ☐  <strong>Can answer, cold, without notes:</strong> "What's your p99 session latency at 50 concurrent tool calls?" and "How does your GitOps model survive a CAB approval process?" — the two questions most likely to resurface verbatim in a real Staff loop<br />
+  ☐  <strong>G1 — LLM SDK tool loop:</strong> <code>scripts/examples/agent-tool-loop.py</code> has run end-to-end and you can explain the <code>tool_use</code> / <code>tool_result</code> message cycle from memory<br />
+  ☐  <strong>G3 — Go debugging:</strong> have stepped through a goroutine deadlock with <code>dlv</code>, caught a data race with <code>go test -race</code>, and profiled with <code>pprof</code> — can describe findings in an interview<br />
+  ☐  <strong>G4/G5/G6/G7 — GHAS, Ansible, Cloud ADR:</strong> CodeQL + Dependabot + secret scanning workflows are live in CI · two Ansible playbooks (<code>configure-inference-node.yaml</code>, <code>rotate-vault-approle.yaml</code>) run clean via <code>ci-ansible.yml</code> · ADR-016 and <code>terraform/backends/cloud/eks-ephemeral.tf</code> committed with non-placeholder cost rationale
+</div>
+
+
+<h2>The One-Paragraph Portfolio Summary (Verbatim for Interviews)</h2>
+<div style="background:var(--code-bg);color:var(--code-text);border-radius:7px;padding:14px 16px;font-size:12.5px;line-height:1.7">
+  "I built a production-grade AI inference platform on Kubernetes with a GitOps-managed control plane: ArgoCD App-of-Apps, multi-tenant workload isolation via Kueue, autoscaling via KEDA dual triggers on queue depth and KV-cache saturation, and a full zero-trust security stack — Consul mTLS, Vault Agent secret injection, Kyverno admission policies, and Falco runtime rules. I integrated an AI assistant as an MCP client that calls live Prometheus and Kubernetes API tools through IBM Context Forge, which enforces a Virtual Server tool whitelist for blast-radius control — the same governance pattern as IBM watsonx.governance AI Factsheets. Beyond tool-name whitelisting, I close the argument-level gap with an OPA sidecar evaluating every tool call's actual payload, bind the MCP server's identity with SPIFFE/SPIRE SVIDs instead of a static service-account token, redact PII on the response path with a Presidio DLP sidecar, and correlate every Boundary session recording back to its originating OTel trace for sub-5-minute incident reconstruction. I benchmarked the full credential-brokering chain under load with k6 and can quote real p99 session-establishment latency, not an estimate. Every tool call is traced in Grafana Tempo. The platform can be stood up from a fresh clone in under ten minutes, and I've also run it through an air-gapped VPC bootstrap and a CyberArk-brownfield credential federation scenario to prove it survives a real enterprise client network. I hold CKA, CKS, Vault Professional, NCA-AIIO, EX267 RHOAI, and NCP-AIO."
+</div>
+
+<footer><p>Made with IBM Bob · Navigation guide covers all topics including MCP servers, IBM Context Forge, the Zero-Trust Hardening Sprint (ADR-008–016), and the G1–G7 Skills Coverage modules</p></footer>
+</div>
+</body>
+</html>

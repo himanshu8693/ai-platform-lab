@@ -1,0 +1,185 @@
+---
+# =============================================================================
+# clusters/local-kind/apps/chartmuseum.yaml
+# ChartMuseum ArgoCD Application — Offline Helm Chart Repository
+#
+# Gap F fix: deploys an in-cluster Helm chart repository (ChartMuseum) so that
+# ArgoCD can source Helm charts from inside the air-gapped VPC rather than from
+# https://charts.helm.sh or other internet-accessible Helm repos.
+#
+# ArgoCD configuration after this deploys:
+#   1. ChartMuseum is running in the platform namespace
+#   2. Charts are pre-loaded via scripts/fde/preload-images.sh (which also pushes charts)
+#   3. ArgoCD Applications that reference Helm repos are updated to point at:
+#      http://chartmuseum.platform.svc.cluster.local:8080
+#
+# Pre-flight requirement (before applying to air-gap VPC):
+#   ./scripts/fde/preload-images.sh   # mirrors images AND pushes Helm charts
+#
+# References: ADR-F01, scripts/fde/mirror-providers.sh
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chartmuseum
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: chartmuseum
+    app.kubernetes.io/component: helm-repo
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "F"
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"   # Deploy early — other apps depend on it
+spec:
+  project: default
+
+  source:
+    # For the initial air-gap bootstrap, ChartMuseum itself is deployed from
+    # the Harbor OCI registry (its image is mirrored during preload-images.sh).
+    # The Helm chart values are inline in this Application manifest to avoid
+    # a chicken-and-egg dependency on the chartmuseum that doesn't exist yet.
+    repoURL: https://chartmuseum.github.io/charts   # replace with Harbor OCI URL in air-gap
+    chart: chartmuseum
+    targetRevision: "3.10.3"
+    helm:
+      values: |
+        replicaCount: 1
+        image:
+          repository: ghcr.io/helm/chartmuseum   # mirrored to Harbor during preload
+          tag: "v0.16.2"
+          pullPolicy: IfNotPresent
+
+        env:
+          open:
+            STORAGE: local
+            DISABLE_API: "false"
+            ALLOW_OVERWRITE: "true"
+            AUTH_ANONYMOUS_GET: "true"   # read-only for cluster nodes; write requires basic auth
+          secret:
+            BASIC_AUTH_USER: "chartmuseum-admin"
+            BASIC_AUTH_PASS: ""   # populated by Vault Agent injection below
+
+        persistence:
+          enabled: true
+          accessMode: ReadWriteOnce
+          size: 10Gi
+          storageClass: ""   # use default storage class
+
+        service:
+          type: ClusterIP
+          port: 8080
+
+        resources:
+          requests: { cpu: "50m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "256Mi" }
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
+        # Readiness: ChartMuseum is ready when it responds to /health
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+---
+# ── Job: push-charts-to-chartmuseum ──────────────────────────────────────────
+# Runs after ChartMuseum is deployed. Pushes all required Helm charts from the
+# vendored charts directory (populated by scripts/fde/preload-images.sh) into
+# ChartMuseum so ArgoCD Applications can source them.
+#
+# In a live air-gap deployment, this Job runs from the charts bundle on the USB drive.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: push-charts-to-chartmuseum
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: chartmuseum-bootstrap
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "F"
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: chart-pusher
+          image: alpine/helm:3.16.2   # mirrored to Harbor during preload
+          command:
+            - sh
+            - -c
+            - |
+              set -euo pipefail
+              CHARTMUSEUM_URL="http://chartmuseum.platform.svc.cluster.local:8080"
+
+              # Wait for ChartMuseum to be ready
+              until curl -sf "${CHARTMUSEUM_URL}/health"; do
+                echo "Waiting for ChartMuseum..."
+                sleep 5
+              done
+              echo "ChartMuseum is ready."
+
+              # Push all vendored charts
+              # Charts are pre-packaged as .tgz files and stored in the ConfigMap
+              # or copied from the USB drive to a shared PVC during air-gap bootstrap.
+              for chart_tgz in /charts/*.tgz; do
+                if [[ -f "${chart_tgz}" ]]; then
+                  CHART_NAME=$(basename "${chart_tgz}" .tgz)
+                  echo "Pushing chart: ${CHART_NAME}"
+                  curl -sf -XPOST \
+                    "${CHARTMUSEUM_URL}/api/charts" \
+                    -F "chart=@${chart_tgz}" \
+                    && echo "  Pushed: ${CHART_NAME}" \
+                    || echo "  WARNING: Failed to push ${CHART_NAME} (may already exist)"
+                fi
+              done
+
+              echo "Chart bootstrap complete."
+              helm repo add local-charts "${CHARTMUSEUM_URL}"
+              helm repo update local-charts
+              helm search repo local-charts
+          volumeMounts:
+            - name: vendored-charts
+              mountPath: /charts
+              readOnly: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: vendored-charts
+          # In air-gap VPC: replace emptyDir with a PVC pre-populated with
+          # chart .tgz files from the USB drive.
+          emptyDir: {}

@@ -1,0 +1,174 @@
+---
+# =============================================================================
+# RBAC — MCP Server ServiceAccounts
+#
+# Security architecture (ADR-006):
+#   mcp-kubernetes-sa  → read-only ClusterRole (get/list/watch only, no write verbs)
+#   mcp-prometheus-sa  → no K8s permissions (only needs HTTP to Prometheus)
+#   ai-assistant-sa    → no K8s permissions (only needs HTTP to MCP servers + Ollama)
+#
+# The RBAC layer is the structural defence against LLM-driven cluster mutation.
+# Even if the ai-assistant pod is fully compromised (prompt injection, container
+# escape), it cannot mutate cluster state because:
+#   1. ai-assistant-sa has no K8s API permissions.
+#   2. mcp-kubernetes-sa has only read verbs — the K8s API returns 403 on any write.
+#   3. These two facts are independently enforced at the API server level.
+#
+# All ServiceAccounts set automountServiceAccountToken: false explicitly.
+# Token is only re-enabled for mcp-kubernetes-sa where it is required for
+# in-cluster API server auth.
+# =============================================================================
+
+# ── ServiceAccount: mcp-kubernetes ───────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-kubernetes-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: mcp-kubernetes
+    app.kubernetes.io/component: mcp-server
+    platform.ai/managed-by: argocd
+  annotations:
+    # Vault will inject a dynamic short-lived SA token if we use Vault K8s auth.
+    # The SA token here is used only for in-cluster API server authentication.
+    platform.ai/security-note: "read-only K8s API access — no write verbs on any ClusterRole bound here"
+automountServiceAccountToken: true   # Required: mcp-kubernetes must authenticate to K8s API
+
+---
+# ── ServiceAccount: mcp-prometheus ───────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-prometheus-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: mcp-prometheus
+    app.kubernetes.io/component: mcp-server
+    platform.ai/managed-by: argocd
+  annotations:
+    platform.ai/security-note: "no K8s API permissions — only HTTP egress to Prometheus :9090"
+automountServiceAccountToken: false  # No K8s API access needed
+
+---
+# ── ServiceAccount: ai-assistant ─────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-assistant-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: ai-assistant
+    app.kubernetes.io/component: mcp-client
+    platform.ai/managed-by: argocd
+  annotations:
+    platform.ai/security-note: "zero K8s API permissions — calls MCP servers via HTTP only"
+automountServiceAccountToken: false  # No K8s API access. Ever.
+
+---
+# =============================================================================
+# ClusterRole: mcp-kubernetes-readonly
+#
+# This is the entire K8s RBAC surface the Kubernetes MCP server can use.
+# Read the list of MISSING verbs — that is the security guarantee:
+#
+#   ALLOWED verbs:  get, list, watch
+#   MISSING verbs:  create, update, patch, delete, exec, portforward, proxy,
+#                   bind, escalate, impersonate, approve, sign, attest
+#
+# The "pods/exec" and "pods/portforward" sub-resources are NOT listed because
+# there is no apiGroups/"" + resources/"pods/exec" entry. Even if an MCP tool
+# called exec, the API server would return 403 because the SA is not authorised
+# for that sub-resource.
+#
+# Scope: cluster-wide read so the LLM can query any namespace the user asks
+# about. If multi-tenant isolation is required, convert this to a Role + binding
+# scoped to the inference namespace only.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-kubernetes-readonly
+  labels:
+    app.kubernetes.io/name: mcp-kubernetes
+    app.kubernetes.io/component: rbac
+    platform.ai/security-tier: read-only
+  annotations:
+    platform.ai/threat-model: >
+      This ClusterRole is the hard backstop against LLM-driven cluster mutation.
+      No matter what tool calls the LLM constructs, this SA cannot execute a write.
+      Defence-in-depth: the MCP server also does not register create/delete/patch
+      tools — the LLM never sees them in the capability advertisement.
+rules:
+  # Core resources — the primary diagnostic surface
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log           # tail logs — hard limit applied at MCP tool layer
+      - services
+      - endpoints
+      - events             # critical: events explain pod failure root causes
+      - namespaces
+      - nodes              # read node status to diagnose GPU node conditions
+      - persistentvolumeclaims
+      - configmaps         # read platform config for context
+    verbs: ["get", "list", "watch"]
+    # Explicitly absent: create, update, patch, delete
+    # Explicitly absent: pods/exec, pods/portforward (not listed = not allowed)
+
+  # Workload resources — deployment status, replica count, rollout state
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - daemonsets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+
+  # Batch resources — job status for Kueue workloads
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+
+  # KEDA — ScaledObject status (did KEDA fire? what is the current replica target?)
+  - apiGroups: ["keda.sh"]
+    resources:
+      - scaledobjects
+      - scaledjobs
+      - triggerauthentications
+    verbs: ["get", "list", "watch"]
+
+  # Kueue — queue status (is team-a borrowing? what is the pending workload count?)
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources:
+      - clusterqueues
+      - localqueues
+      - workloads
+    verbs: ["get", "list", "watch"]
+
+  # Custom resources — ModelDeployment CRD (the platform's own operator resource)
+  - apiGroups: ["platform.ai"]
+    resources:
+      - modeldeployments
+    verbs: ["get", "list", "watch"]
+
+---
+# ── ClusterRoleBinding: mcp-kubernetes-sa → mcp-kubernetes-readonly ──────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-kubernetes-readonly-binding
+  labels:
+    app.kubernetes.io/name: mcp-kubernetes
+    app.kubernetes.io/component: rbac
+    platform.ai/managed-by: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-kubernetes-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-kubernetes-sa
+    namespace: inference

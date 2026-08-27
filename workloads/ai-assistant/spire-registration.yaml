@@ -1,0 +1,281 @@
+---
+# =============================================================================
+# SPIRE Workload Identity Registration — MCP Server
+#
+# Deploys the minimal SPIRE components needed to issue X.509 SVIDs to the
+# MCP server pods in the inference namespace.
+#
+# Components:
+#   1. Namespace: spire
+#   2. ConfigMap: spire-server-config  — SPIRE server configuration
+#   3. StatefulSet: spire-server       — SPIRE server (single replica for lab)
+#   4. Service: spire-server           — exposes the GRPC registration API + JWKS
+#   5. DaemonSet: spire-agent          — node-level SPIRE agent for workload attestation
+#   6. ClusterSpiffeID: mcp-server     — workload registration binding SPIFFE URI to pod selector
+#
+# Trust domain: ai-platform.internal (must match terraform/spiffe-vault-auth.tf)
+#
+# How it works (ADR-009):
+#   1. SPIRE agent on each node attests the mcp-server pod via K8s workload attestor
+#   2. SPIRE server issues a short-lived X.509 SVID to the pod
+#   3. SVID carries SPIFFE URI SAN: spiffe://ai-platform.internal/ns/inference/sa/mcp-server-sa
+#   4. SVID is auto-rotated every 3600s (1 hour)
+#   5. MCP server authenticates to Vault using the SVID JWT form (not raw SA token)
+#
+# References: ADR-009, terraform/spiffe-vault-auth.tf
+# =============================================================================
+
+# ── Namespace: spire ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spire
+  labels:
+    kubernetes.io/metadata.name: spire
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"   # Deploy before any workload namespace
+
+---
+# ── ConfigMap: spire-server-config ───────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server-config
+  namespace: spire
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port    = "8081"
+      trust_domain = "ai-platform.internal"
+      data_dir     = "/run/spire/data"
+      log_level    = "INFO"
+
+      # SVID TTL: 1 hour — matches Vault token TTL in spiffe-vault-auth.tf
+      default_x509_svid_ttl = "1h"
+      default_jwt_svid_ttl  = "5m"   # Short JWT TTL for Vault auth calls
+      ca_ttl                = "24h"
+    }
+
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          # Lab: in-memory SQLite. Production: PostgreSQL.
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          clusters = {
+            "ai-platform" = {
+              service_account_allow_list = ["spire:spire-agent"]
+            }
+          }
+        }
+      }
+
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+        }
+      }
+
+      Notifier "k8sbundle" {
+        plugin_data {
+          # Publishes the SPIRE CA bundle to a ConfigMap for Vault JWKS consumption
+          namespace        = "spire"
+          config_map       = "spire-bundle"
+          config_map_key   = "bundle.crt"
+        }
+      }
+    }
+
+    health_checks {
+      listener_enabled = true
+      bind_address     = "0.0.0.0"
+      bind_port        = "8080"
+      live_path        = "/live"
+      ready_path       = "/ready"
+    }
+
+---
+# ── ServiceAccount + ClusterRole: spire-server ───────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server-sa
+  namespace: spire
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+automountServiceAccountToken: true   # Required for K8s API attestation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server-role
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]   # For publishing the CA bundle via k8sbundle notifier
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]          # For PSAT node attestation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server-binding
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server-role
+subjects:
+  - kind: ServiceAccount
+    name: spire-server-sa
+    namespace: spire
+
+---
+# ── StatefulSet: spire-server ─────────────────────────────────────────────────
+# Single replica for lab. Production: use SPIRE HA with a PostgreSQL datastore.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spire-server
+  serviceName: spire-server
+  template:
+    metadata:
+      labels:
+        app: spire-server
+    spec:
+      serviceAccountName: spire-server-sa
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:1.9.6
+          args: ["-config", "/run/spire/config/server.conf"]
+          ports:
+            - containerPort: 8081   # gRPC registration + JWKS endpoint
+              name: grpc
+            - containerPort: 8080
+              name: health
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+          livenessProbe:
+            httpGet: { path: /live, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-server-config
+  volumeClaimTemplates:
+    - metadata:
+        name: spire-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+# ── Service: spire-server ─────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app: spire-server
+    platform.ai/managed-by: argocd
+spec:
+  selector:
+    app: spire-server
+  ports:
+    - name: grpc
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+    - name: health
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── ClusterSPIFFEID: mcp-server-sa ───────────────────────────────────────────
+# Requires the SPIFFE/SPIRE Kubernetes integration (spire-controller-manager).
+# This CR registers the mcp-server-sa workload and binds a SPIFFE URI to its pods.
+#
+# The spiffeIDTemplate produces:
+#   spiffe://ai-platform.internal/ns/inference/sa/mcp-server-sa
+#
+# This MUST match exactly what terraform/spiffe-vault-auth.tf declares in
+# vault_jwt_auth_backend_role.mcp_server.bound_claims["sub"].
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mcp-server-sa-identity
+  labels:
+    platform.ai/managed-by: argocd
+    platform.ai/security-tier: workload-identity
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    platform.ai/gap: "B"
+    platform.ai/adr: "ADR-009"
+spec:
+  spiffeIDTemplate: "spiffe://ai-platform.internal/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: mcp-server   # matches both mcp-kubernetes and mcp-prometheus
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: inference
+  # SVID TTL: 1 hour — matches Vault JWT auth role token_ttl
+  # Auto-rotated by SPIRE agent before expiry (rotation at 80% of TTL)
+  dnsNameTemplates: []
+  federatesWith: []
+  admin: false
+  downstream: false
+  hint: "ai-platform-mcp-server"

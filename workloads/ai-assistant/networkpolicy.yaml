@@ -1,0 +1,312 @@
+---
+# =============================================================================
+# NetworkPolicy additions for Phase 6 MCP AI Assistant Workload
+#
+# These policies extend the existing inference namespace zero-trust suite
+# (workloads/inference/networkpolicy.yaml) with the three new pods:
+#   ai-assistant     app=ai-assistant
+#   mcp-kubernetes   app=mcp-kubernetes
+#   mcp-prometheus   app=mcp-prometheus
+#
+# The default-deny-all policy (Policy 1) in networkpolicy.yaml already blocks
+# all traffic. These are additive allow rules only.
+#
+# New traffic paths being opened:
+#   ai-assistant ──▶ mcp-kubernetes :8080      (MCP tool calls)
+#   ai-assistant ──▶ mcp-prometheus :8081      (MCP tool calls)
+#   ai-assistant ──▶ ollama-server  :11434     (LLM inference)
+#   ai-assistant ──▶ vault          :8200      (Vault Agent sidecar)
+#   mcp-prometheus ──▶ prometheus   :9090      (PromQL execution)
+#   mcp-kubernetes ──▶ K8s API      :6443      (kubectl-equivalent queries)
+#
+# Traffic paths intentionally NOT opened:
+#   mcp-kubernetes → any service other than K8s API    (denied by default-deny)
+#   mcp-prometheus → any service other than Prometheus (denied by default-deny)
+#   ai-assistant   → K8s API server                    (denied by default-deny)
+#   any pod        → mcp-kubernetes (except ai-assistant)  (denied by default-deny)
+# =============================================================================
+
+# ── Policy 8 — ai-assistant egress to mcp-kubernetes ─────────────────────────
+# ai-assistant calls mcp-kubernetes's JSON-RPC endpoint for K8s tool calls.
+# No other pods may initiate connections to mcp-kubernetes from within the
+# inference namespace (see Policy 10 — ingress on mcp-kubernetes).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-assistant-to-mcp-kubernetes
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/paired-with: "allow-ingress-mcp-kubernetes-from-assistant"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-assistant
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-kubernetes
+      ports:
+        - protocol: TCP
+          port: 8080    # MCP HTTP+SSE transport
+
+---
+# ── Policy 9 — ai-assistant egress to mcp-prometheus ─────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-assistant-to-mcp-prometheus
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/paired-with: "allow-ingress-mcp-prometheus-from-assistant"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-assistant
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-prometheus
+      ports:
+        - protocol: TCP
+          port: 8081    # MCP HTTP+SSE transport (mcp-prometheus listens on 8081)
+
+---
+# ── Policy 10 — ai-assistant egress to ollama-server ─────────────────────────
+# ai-assistant calls Ollama for LLM inference.
+# Complements the existing Policy 3/4 (proxy↔ollama) — this adds the
+# ai-assistant as an additional allowed client of the ollama-server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-assistant-to-ollama
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-assistant
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ollama-server
+      ports:
+        - protocol: TCP
+          port: 11434   # Ollama API / OpenAI-compat /v1
+
+---
+# ── Policy 11 — mcp-prometheus egress to Prometheus ─────────────────────────
+# mcp-prometheus executes PromQL queries against the Prometheus server in the
+# monitoring namespace. This is the only egress path permitted for mcp-prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mcp-prometheus-to-prometheus
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/threat-model: >
+      mcp-prometheus has no K8s RBAC permissions. Its only legitimate outbound
+      connection is to Prometheus :9090. Restricting it here means a compromised
+      mcp-prometheus pod cannot reach the K8s API, Vault, or any other service.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-prometheus
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090    # Prometheus HTTP API
+
+---
+# ── Policy 12 — mcp-kubernetes egress to Kubernetes API server ───────────────
+# mcp-kubernetes must reach the K8s API server to execute tool calls.
+# The API server is in the kube-system namespace on port 6443 (or the local
+# loopback address 127.0.0.1:6443 for control plane nodes).
+#
+# In KinD, the API server is at the ClusterIP of the kubernetes service in the
+# default namespace, port 443. The ipBlock covers the pod network CIDR range
+# used by KinD (172.18.0.0/16 by default) to reach the control plane.
+#
+# Security note: this is the most privileged egress rule in the MCP stack.
+# mcp-kubernetes is the only pod that needs API server access. Restrict the
+# ipBlock CIDR to the actual API server IP once known in your lab cluster:
+#   kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mcp-kubernetes-to-apiserver
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/threat-model: >
+      mcp-kubernetes must call the K8s API server. The SA bound to this pod has
+      only read verbs (ClusterRole mcp-kubernetes-readonly). Even with this
+      network path open, the worst an attacker in this pod can do is read K8s
+      resources — identical to what kubectl get/describe can read with the same SA.
+    policy.security/tighten-in-production: >
+      Replace the ipBlock CIDR with the specific ClusterIP of the kubernetes
+      service in the default namespace. In production, use a node-selector to
+      further restrict this policy to control-plane nodes only.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-kubernetes
+  policyTypes:
+    - Egress
+  egress:
+    # Allow access to the Kubernetes API server.
+    # The kubernetes Service in the default namespace is the API server ClusterIP.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+          podSelector: {}   # kubernetes service is not a pod; use ipBlock below
+    # ipBlock covers KinD default pod/service CIDR.
+    # Tighten to the exact kubernetes ClusterIP in your cluster:
+    #   kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}'
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32    # Kubernetes API server ClusterIP (KinD default)
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+---
+# ── Policy 13 — ingress to mcp-kubernetes from ai-assistant only ─────────────
+# mcp-kubernetes accepts tool call connections ONLY from the ai-assistant pod.
+# Any other pod attempting to call mcp-kubernetes (including a compromised
+# pod in the inference namespace) is blocked at the NetworkPolicy layer AND
+# at the Consul intention layer (defence-in-depth).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-kubernetes-from-assistant
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/paired-with: "allow-ai-assistant-to-mcp-kubernetes"
+    policy.security/threat-model: >
+      If mcp-kubernetes were reachable by any pod in the cluster, a compromised
+      pod could use the MCP server as a read-only proxy to the K8s API.
+      Restricting ingress to ai-assistant only means only the intended client
+      can use the MCP server's K8s read capability.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-kubernetes
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# ── Policy 14 — ingress to mcp-prometheus from ai-assistant only ─────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-prometheus-from-assistant
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/paired-with: "allow-ai-assistant-to-mcp-prometheus"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-prometheus
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 8081
+
+---
+# ── Policy 15 — ollama-server ingress from ai-assistant ──────────────────────
+# Adds ai-assistant as an authorised ingress source on ollama-server.
+# (Policy 3 already allows inference-proxy. This extends it to ai-assistant.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-ollama-from-ai-assistant
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: ollama-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 11434

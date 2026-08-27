@@ -1,0 +1,141 @@
+---
+# =============================================================================
+# clusters/production/app-of-apps.yaml
+# Production App-of-Apps — CAB-Compatible GitOps
+#
+# Gap H fix: production ArgoCD applications have auto-sync DISABLED.
+# Every sync to production requires:
+#   1. A PR to clusters/production/** approved by platform-change-board (CODEOWNERS)
+#   2. An explicit `argocd app sync <app>` command from an authorized operator
+#   3. (Optional) A passing CAB approval hook (workloads/platform/cab-approval-hook.yaml)
+#
+# This file is the root App-of-Apps for production. It points at
+# clusters/production/apps/ for child Application manifests — the same
+# directory structure as local-kind but with manual sync policies.
+#
+# CI/CD promotion flow (ADR-015):
+#   PR to clusters/production/** →
+#     CODEOWNERS review (platform-change-board) →
+#       Merge → ArgoCD detects diff but does NOT sync →
+#         Operator runs: argocd app sync production-platform →
+#           PreSync hook: cab-approval-hook.yaml verifies CAB ticket →
+#             Sync proceeds wave by wave → Sync complete
+#
+# References: ADR-015, .github/CODEOWNERS, workloads/platform/cab-approval-hook.yaml
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: production-app-of-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: production-app-of-apps
+    platform.ai/environment: production
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "H"
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    # Gap H: human-readable note on why auto-sync is disabled
+    platform.ai/change-policy: >
+      Production applications require manual sync approval.
+      Auto-sync is intentionally disabled. Sync via:
+        argocd app sync production-platform --prune
+      CAB ticket must be in Approved state before sync proceeds.
+      See ADR-015 and workloads/platform/cab-approval-hook.yaml.
+spec:
+  project: production   # Restricted AppProject — see below
+
+  source:
+    repoURL: https://github.com/YOUR_ORG/ai-platform-lab   # update to actual org
+    targetRevision: main
+    path: clusters/production/apps
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  # ── Gap H: Manual sync only ───────────────────────────────────────────────
+  # syncPolicy.automated is intentionally ABSENT.
+  # ArgoCD will show OutOfSync status after a PR merges but will NOT apply
+  # until an operator explicitly triggers: argocd app sync production-platform
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false           # Namespaces must be pre-created in production
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true                  # Delete old resources AFTER new ones are healthy
+      - ApplyOutOfSyncOnly=true         # Only apply changed resources, not the full set
+    # Retry on transient failures (e.g., CRD not yet ready)
+    retry:
+      limit: 3
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+
+  # ── Health checks ─────────────────────────────────────────────────────────
+  ignoreDifferences:
+    # Ignore the current-change-ticket ConfigMap — updated per-change by the CAB hook
+    - group: ""
+      kind: ConfigMap
+      name: current-change-ticket
+      namespace: platform
+      jsonPointers:
+        - /data/ticket_id
+
+---
+# ── AppProject: production (restricted project) ───────────────────────────────
+# The production AppProject restricts which repos, clusters, and namespaces
+# ArgoCD Applications in this project can target. Prevents a compromised
+# Application manifest from deploying to a namespace it shouldn't reach.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: production
+  namespace: argocd
+  labels:
+    platform.ai/environment: production
+    platform.ai/gap: "H"
+  annotations:
+    platform.ai/adr: "ADR-015"
+spec:
+  description: "Production environment — manual sync, CAB approval required"
+
+  # Allowed source repositories (only the official org repo)
+  sourceRepos:
+    - "https://github.com/YOUR_ORG/ai-platform-lab"
+
+  # Allowed destination clusters and namespaces
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: inference
+    - server: https://kubernetes.default.svc
+      namespace: monitoring
+    - server: https://kubernetes.default.svc
+      namespace: vault
+    - server: https://kubernetes.default.svc
+      namespace: platform
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # Disallow cluster-level resources in production (require explicit allowlist)
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: "rbac.authorization.k8s.io"
+      kind: ClusterRole
+    - group: "rbac.authorization.k8s.io"
+      kind: ClusterRoleBinding
+
+  # Sync windows: production changes are only allowed during approved windows
+  syncWindows:
+    - kind: allow
+      schedule: "0 9-17 * * 1-5"   # Monday-Friday 09:00-17:00 (business hours)
+      duration: 8h
+      applications: ["*"]
+      manualSync: true              # Manual sync still allowed; auto-sync blocked
+    - kind: deny
+      schedule: "0 17-9 * * *"     # Outside business hours
+      duration: 16h
+      applications: ["*"]
+      manualSync: false             # No syncs (even manual) outside business hours

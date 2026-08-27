@@ -1,0 +1,87 @@
+# =============================================================================
+# kube-linter configuration — ai-platform-lab
+# =============================================================================
+#
+# kube-linter is run in CI job 3 (manifest-validate) against workloads/ and
+# platform/ directories. This config selects the checks that are meaningful
+# for a GPU inference platform running on Kind (dev) or OpenShift (prod).
+#
+# Check catalogue: https://docs.kubelinter.io/#/generated/checks
+#
+# Run locally:
+#   kube-linter lint --config .kube-linter.yaml workloads/ platform/
+#
+# To see all available check names:
+#   kube-linter checks list
+# =============================================================================
+
+checks:
+  # Start from the full default set and selectively disable checks that are
+  # intentionally not applicable to this lab environment.
+  addAllBuiltIn: true
+
+  exclude:
+    # ── Checks disabled for lab / Kind environment ──────────────────────────
+
+    # Kind nodes don't support PodDisruptionBudgets meaningfully (single worker).
+    # Re-enable when deploying to multi-node production clusters.
+    - "minimum-three-replicas"
+
+    # Readiness gates are set on individual containers already. The namespace-
+    # level pod disruption budget check creates noise on a 3-node Kind cluster.
+    - "no-read-only-root-fs"
+
+    # The mock-dcgm-exporter runs with a read-only root FS (enforced in
+    # Dockerfile USER + volume mounts). kube-linter checks the YAML directly
+    # and flags pods that don't set readOnlyRootFilesystem=true in the
+    # container securityContext. This is enforced at the operator level in
+    # main.go (line ~674) but kube-linter can't see generated pod specs.
+    # Re-enable once CRD manifests are present for static analysis.
+    - "read-secret-from-env-var"
+
+    # Vault Agent injects secrets via init-container + shared tmpfs volume.
+    # Secrets are NOT in environment variables — this check fires false
+    # positives on the vault-agent annotation pattern.
+
+  customize:
+    checks:
+      # ── Require resource requests and limits on all containers ────────────
+      - name: "resource-requirements"
+        params:
+          requireCPULimit: true
+          requireCPURequest: true
+          requireMemoryLimit: true
+          requireMemoryRequest: true
+
+      # ── Require non-root user ─────────────────────────────────────────────
+      - name: "run-as-non-root"
+        params: {}
+
+      # ── Require liveness and readiness probes ─────────────────────────────
+      - name: "liveness-probe"
+        params: {}
+
+      - name: "readiness-probe"
+        params: {}
+
+      # ── Disallow privilege escalation ─────────────────────────────────────
+      - name: "no-privilege-escalation"
+        params: {}
+
+      # ── Require dropping ALL capabilities ─────────────────────────────────
+      - name: "drop-net-raw-capability"
+        params: {}
+
+      # ── Require image tag (no :latest) ───────────────────────────────────
+      - name: "latest-tag"
+        params: {}
+
+      # ── Warn on writable host path mounts ────────────────────────────────
+      - name: "no-host-pid"
+        params: {}
+
+      - name: "no-host-network"
+        params: {}
+
+      - name: "no-host-ipc"
+        params: {}

@@ -1,0 +1,54 @@
+---
+# =============================================================================
+# topologies/vault-ha-raft/scenarios/seal-auto.yaml
+# Fault Scenario: Unexpected Vault Seal
+#
+# Simulates: Sev-1 where Vault seals itself due to an unreachable auto-unseal
+# backend (e.g., AWS KMS network partition, or a Transit seal key deletion).
+# In the lab, this is simulated by patching the Vault config to reference a
+# non-existent Transit key path, then restarting the pod.
+#
+# Symptoms reproduced:
+#   • vault status: "Vault is sealed"
+#   • vault-test-client: 503 responses, then 0 successful reads
+#   • Prometheus: vault_core_unsealed = 0 for all replicas
+#   • vault operator unseal required (Shamir keys) for recovery
+#
+# AI RCA query:
+#   "Query Prometheus for vault_core_unsealed in topology-vault-ha-raft.
+#    Are any pods in error state? What do the Vault pod logs say?"
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: active-scenario-state
+  namespace: topology-vault-ha-raft
+  labels:
+    platform.ai/scenario:     "seal-auto"
+    platform.ai/fault-type:   "seal-failure"
+    platform.ai/active-fault: "true"
+  annotations:
+    ephemeral-lab/scenario-name: "seal-auto"
+    ephemeral-lab/fault-description: >
+      Vault is sealed. All three Raft nodes report sealed=true.
+      Auto-unseal backend is unreachable (Transit key path misconfigured).
+      Manual unseal with Shamir keys is required to restore service.
+    ephemeral-lab/expected-symptoms: >
+      vault_core_unsealed = 0 for all vault pods.
+      HTTP 503 from all vault-test-client requests.
+      vault operator raft list-peers returns "server is not active".
+    ephemeral-lab/remediation: >
+      kubectl exec -n topology-vault-ha-raft vault-0 --
+      vault operator unseal <key-1>
+      kubectl exec -n topology-vault-ha-raft vault-0 --
+      vault operator unseal <key-2>
+      kubectl exec -n topology-vault-ha-raft vault-0 --
+      vault operator unseal <key-3>
+    ephemeral-lab/promql_sealed: "vault_core_unsealed{namespace='topology-vault-ha-raft'}"
+data:
+  scenario: "seal-auto"
+  description: "Vault unexpected seal simulation — all nodes sealed"
+  fault_type: "seal-failure"
+  debug_cmd: "kubectl exec -n topology-vault-ha-raft vault-0 -- vault status"
+  unseal_keys_location: "secret/data/topology/vault-ha-raft/unseal-keys"

@@ -1,0 +1,206 @@
+---
+# =============================================================================
+# workloads/platform/cab-approval-hook.yaml
+# CAB Approval PreSync Hook — Gap H Fix
+#
+# ArgoCD PreSync hook that verifies a Change Advisory Board (CAB) ticket is in
+# "Approved" state before allowing sync wave 3 (workload updates) to proceed.
+#
+# Placement in sync wave sequence:
+#   Wave 0: Namespaces, CRDs
+#   Wave 1: Secrets, ConfigMaps
+#   Wave 2: Infrastructure (Vault, Consul, RBAC) + THIS HOOK
+#   Wave 3: Application workloads (mcp-kubernetes, mcp-prometheus, context-forge)
+#   Wave 4: Autoscalers, KEDA ScaledObjects
+#
+# The hook runs BEFORE wave 3. If the CAB ticket is not Approved, the hook Job
+# exits with code 1, ArgoCD halts the sync, and wave 3 workloads are NOT updated.
+# The operator must get the CAB ticket approved and re-trigger the sync.
+#
+# Configuration:
+#   The current change ticket ID is stored in ConfigMap "current-change-ticket"
+#   in the platform namespace. Updated via PR (one ticket per deployment PR).
+#   The ITSM webhook URL and auth token are stored in Vault → Secret "itsm-webhook-token"
+#
+# For lab environments without an ITSM:
+#   Set ITSM_BYPASS=true in the ConfigMap to skip the CAB check.
+#   This must NEVER be set in production.
+#
+# References: ADR-015, clusters/production/app-of-apps.yaml
+# =============================================================================
+
+# ── ConfigMap: current-change-ticket ─────────────────────────────────────────
+# Updated by the PR automation (GitHub Actions workflow) when a production
+# deployment PR is merged. Contains the ticket ID that the CAB hook verifies.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: current-change-ticket
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: cab-approval
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "H"
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    # This annotation tells ArgoCD NOT to mark the app as OutOfSync when
+    # this ConfigMap's ticket_id changes (it changes on every deployment PR)
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+data:
+  ticket_id: "PLACEHOLDER-CHANGE-ME"   # Updated by PR merge automation
+  itsm_system: "servicenow"            # servicenow | jira-service-management | remedy
+  ITSM_BYPASS: "false"                 # NEVER set to true in production
+
+---
+# ── Job: cab-approval-check ──────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cab-approval-check
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: cab-approval-check
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "H"
+  annotations:
+    # ArgoCD hook: runs BEFORE the main sync (at the end of wave 2)
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # Wave 2: runs after secrets/config are in place but before workloads update
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 0      # Do not retry on failure — fail fast and halt the sync
+  activeDeadlineSeconds: 120   # 2 min timeout; if ITSM is slow, fail the sync
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cab-approval-check
+        platform.ai/gap: "H"
+    spec:
+      serviceAccountName: cab-approval-sa
+      restartPolicy: Never
+
+      containers:
+        - name: cab-checker
+          image: curlimages/curl:8.11.0
+          command:
+            - sh
+            - -c
+            - |
+              set -euo pipefail
+
+              TICKET_ID="${CAB_TICKET_ID}"
+              ITSM_URL="${ITSM_WEBHOOK_URL}"
+              ITSM_BYPASS="${ITSM_BYPASS:-false}"
+
+              echo "=== CAB Approval Gate ==="
+              echo "Ticket ID:   ${TICKET_ID}"
+              echo "ITSM System: ${ITSM_SYSTEM}"
+              echo "ITSM URL:    ${ITSM_URL}"
+
+              # ── Bypass mode (lab / staging only) ────────────────────────
+              if [ "${ITSM_BYPASS}" = "true" ]; then
+                echo "WARNING: ITSM_BYPASS=true — skipping CAB check."
+                echo "This must NEVER be set in production (violates ADR-015)."
+                exit 0
+              fi
+
+              # ── Validate ticket ID is not a placeholder ──────────────────
+              if [ "${TICKET_ID}" = "PLACEHOLDER-CHANGE-ME" ] || [ -z "${TICKET_ID}" ]; then
+                echo "ERROR: current-change-ticket ConfigMap has placeholder ticket_id."
+                echo "Update the ConfigMap with the actual CAB ticket ID before syncing."
+                echo "  kubectl patch configmap current-change-ticket -n platform"
+                echo "    --patch '{\"data\":{\"ticket_id\":\"CHG0012345\"}}'"
+                exit 1
+              fi
+
+              # ── Query ITSM for ticket state ───────────────────────────────
+              echo "Querying ITSM for ticket state..."
+              HTTP_RESPONSE=$(curl -sf \
+                -H "Authorization: Bearer ${ITSM_TOKEN}" \
+                -H "Accept: application/json" \
+                --max-time 30 \
+                "${ITSM_URL}/api/tickets/${TICKET_ID}/state" \
+                2>&1) || {
+                echo "ERROR: Failed to reach ITSM at ${ITSM_URL}"
+                echo "Response: ${HTTP_RESPONSE}"
+                echo "Blocking sync until ITSM is reachable."
+                exit 1
+              }
+
+              TICKET_STATE=$(echo "${HTTP_RESPONSE}" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+              TICKET_APPROVER=$(echo "${HTTP_RESPONSE}" | grep -o '"approved_by":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+
+              echo "Ticket state:    ${TICKET_STATE}"
+              echo "Approved by:     ${TICKET_APPROVER}"
+
+              # ── Approval check ────────────────────────────────────────────
+              if [ "${TICKET_STATE}" != "Approved" ]; then
+                echo ""
+                echo "=== SYNC BLOCKED ==="
+                echo "CAB ticket ${TICKET_ID} is in state '${TICKET_STATE}'. Expected 'Approved'."
+                echo ""
+                echo "Actions required:"
+                echo "  1. Get the change ticket approved in ${ITSM_SYSTEM}"
+                echo "  2. Re-trigger the ArgoCD sync:"
+                echo "     argocd app sync production-platform --prune"
+                echo ""
+                echo "Do NOT attempt to bypass this gate outside of an approved emergency process."
+                exit 1
+              fi
+
+              echo ""
+              echo "=== CAB APPROVED ==="
+              echo "Ticket ${TICKET_ID} is Approved by ${TICKET_APPROVER}."
+              echo "Proceeding with production sync (wave 3 workloads will update)."
+          env:
+            - name: CAB_TICKET_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: current-change-ticket
+                  key: ticket_id
+            - name: ITSM_BYPASS
+              valueFrom:
+                configMapKeyRef:
+                  name: current-change-ticket
+                  key: ITSM_BYPASS
+            - name: ITSM_SYSTEM
+              valueFrom:
+                configMapKeyRef:
+                  name: current-change-ticket
+                  key: itsm_system
+            - name: ITSM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: itsm-webhook-token
+                  key: token
+            - name: ITSM_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: itsm-webhook-token
+                  key: webhook_url
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "50m", memory: "32Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+---
+# ── ServiceAccount: cab-approval-sa ──────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cab-approval-sa
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: cab-approval
+    platform.ai/managed-by: argocd
+  annotations:
+    platform.ai/security-note: "No K8s API permissions. Only reads ConfigMap via env injection. Makes outbound HTTP call to ITSM."
+automountServiceAccountToken: false

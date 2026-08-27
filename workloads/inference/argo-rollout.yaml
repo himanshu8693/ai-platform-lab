@@ -1,0 +1,157 @@
+---
+# =============================================================================
+# Argo Rollout — canary delivery for inference model updates
+#
+# Replaces the standard Deployment for llama3 to enable:
+#   - Canary traffic split (10% → 30% → 100%)
+#   - Automated SLO analysis on TTFT p99 before promotion
+#   - Instant rollback if analysis fails
+#
+# Requires: Argo Rollouts controller installed (see ArgoCD apps)
+# Metric: vllm_time_to_first_token_seconds p99 < 1.0s for 3 consecutive checks
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: llama3
+  namespace: inference
+  labels:
+    app: llama3
+    platform.ai/managed-by: argo-rollouts
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llama3
+  template:
+    metadata:
+      labels:
+        app: llama3
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/agent-inject-secret-hf-token: "secret/data/ai-platform/hf-token"
+        vault.hashicorp.com/role: "inference-role"
+        platform.ai/scrape: "true"
+    spec:
+      serviceAccountName: default
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.5.4
+          ports:
+            - name: http
+              containerPort: 11434
+              protocol: TCP
+            - name: metrics
+              containerPort: 2112
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "12Gi"
+          env:
+            - name: OLLAMA_MODELS
+              value: /models
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 1
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+      volumes:
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 10Gi
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+
+  strategy:
+    canary:
+      # Canary service receives subset of traffic via ingress weight annotation
+      canaryService: llama3-canary
+      stableService: llama3-stable
+
+      # Traffic routing via ingress-nginx canary annotations
+      trafficRouting:
+        nginx:
+          stableIngress: llama3-ingress
+
+      steps:
+        - setWeight: 10
+        - pause: {}              # Manual gate: confirm canary is healthy
+        - analysis:
+            templates:
+              - templateName: ttft-p99-analysis
+            args:
+              - name: service-name
+                value: llama3-canary
+        - setWeight: 30
+        - pause:
+            duration: 2m
+        - analysis:
+            templates:
+              - templateName: ttft-p99-analysis
+            args:
+              - name: service-name
+                value: llama3-canary
+        - setWeight: 100
+
+      # Automatic rollback if analysis fails
+      autoPromotionEnabled: false
+---
+# =============================================================================
+# AnalysisTemplate — TTFT p99 SLO gate
+#
+# Queries Prometheus for p99 TTFT over the last 5 minutes.
+# Must be < 1.0s to pass. Checked 3 times; 2+ failures = abort + rollback.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: ttft-p99-analysis
+  namespace: inference
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: ttft-p99
+      interval: 2m
+      count: 3
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc.cluster.local
+          query: |
+            histogram_quantile(
+              0.99,
+              sum(rate(
+                vllm_time_to_first_token_seconds_bucket{model_name="llama3.2:3b"}[5m]
+              )) by (le)
+            )
+      successCondition: result[0] < 1.0
+      failureCondition: result[0] >= 1.0

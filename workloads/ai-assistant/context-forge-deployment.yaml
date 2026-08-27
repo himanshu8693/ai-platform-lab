@@ -1,0 +1,428 @@
+---
+# =============================================================================
+# IBM Context Forge — MCP AI Gateway
+#
+# Deploys ContextForge (ghcr.io/ibm/mcp-context-forge) as the single MCP
+# protocol gateway between the ai-assistant pod and all backend MCP servers.
+#
+# Architecture (see ADR-007):
+#   ai-assistant → context-forge:4444 (JWT-authenticated)
+#   context-forge → mcp-kubernetes:8080 (server-side proxy)
+#   context-forge → mcp-prometheus:8081 (server-side proxy)
+#
+# Vault Agent injects:
+#   JWT_SECRET_KEY           → /vault/secrets/jwt-secret-key
+#   AUTH_ENCRYPTION_SECRET   → /vault/secrets/auth-encryption-secret
+#   PLATFORM_ADMIN_PASSWORD  → /vault/secrets/admin-password
+#
+# Lab simplifications vs production:
+#   - SQLite backend (no PostgreSQL operator)
+#   - CACHE_TYPE=memory (single replica, no Redis needed)
+#   - replicaCount: 1 (no HA)
+#   - HTTP-only service (Consul mTLS provides transport security)
+# =============================================================================
+
+# ── ServiceAccount: context-forge ────────────────────────────────────────────
+# Context Forge is the gateway — it needs no Kubernetes API permissions.
+# Its backend MCP servers hold their own ServiceAccounts with scoped RBAC.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: context-forge-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: mcp-gateway
+    platform.ai/managed-by: argocd
+  annotations:
+    platform.ai/security-note: >
+      Context Forge is a protocol gateway — it needs NO Kubernetes API
+      permissions. All cluster reads are delegated to mcp-kubernetes-sa
+      via the registered backend gateway.
+automountServiceAccountToken: false   # No K8s API access for the gateway itself
+
+---
+# ── ConfigMap: context-forge-config ──────────────────────────────────────────
+# Non-secret environment variables. Secrets are injected by Vault Agent.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: context-forge-config
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: mcp-gateway
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  # ── Server ─────────────────────────────────────────────────────────────────
+  APP_NAME: "AI Platform Context Forge"
+  HOST: "0.0.0.0"
+  PORT: "4444"
+  ENVIRONMENT: "development"          # relaxes CSRF cookie Secure flag for HTTP-only lab
+  APP_DOMAIN: "http://context-forge.inference.svc.cluster.local:4444"
+
+  # ── Database (SQLite for lab) ───────────────────────────────────────────────
+  # Path is on the ephemeral emptyDir volume — rebuilt by bootstrap Job on pod restart.
+  DATABASE_URL: "sqlite:////data/context-forge.db"
+  MCPGATEWAY_SKIP_MIGRATIONS: "false"
+
+  # ── Cache (in-memory for single-replica lab) ───────────────────────────────
+  CACHE_TYPE: "memory"
+  SESSION_TTL: "3600"
+  MESSAGE_TTL: "600"
+
+  # ── Auth settings (secrets injected by Vault Agent below) ─────────────────
+  AUTH_REQUIRED: "true"
+  MCP_REQUIRE_AUTH: "true"
+  MCP_CLIENT_AUTH_ENABLED: "true"
+  JWT_ALGORITHM: "HS256"
+  JWT_AUDIENCE: "mcpgateway-api"
+  JWT_ISSUER: "mcpgateway"
+  TOKEN_EXPIRY: "60"                  # Short-lived: 60 min. Vault Agent rotates the client token.
+  REQUIRE_TOKEN_EXPIRATION: "true"
+  REQUIRE_JTI: "true"
+  REQUIRE_STRONG_SECRETS: "false"     # Lab: allow shorter secrets. Set true in production.
+  PUBLIC_REGISTRATION_ENABLED: "false"
+  PROTECT_ALL_ADMINS: "true"
+
+  # ── Admin UI (enabled for lab portfolio demonstration) ─────────────────────
+  MCPGATEWAY_UI_ENABLED: "true"
+  MCPGATEWAY_ADMIN_API_ENABLED: "true"
+  MCPGATEWAY_UI_AIRGAPPED: "false"
+  API_ALLOW_BASIC_AUTH: "false"       # JWT only — never Basic auth for API
+
+  # ── Catalog (MCP server auto-discovery on startup) ─────────────────────────
+  MCPGATEWAY_CATALOG_ENABLED: "true"
+  MCPGATEWAY_CATALOG_FILE: "/config/mcp-catalog.yml"
+  MCPGATEWAY_CATALOG_AUTO_HEALTH_CHECK: "true"
+
+  # ── A2A (disabled — not needed for infrastructure observation) ─────────────
+  MCPGATEWAY_A2A_ENABLED: "false"
+
+  # ── Observability (OTel → Grafana Tempo) ───────────────────────────────────
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER: "otlp"
+  OTEL_ENDPOINT: "http://otel-collector.monitoring.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "context-forge-gateway"
+  LOG_LEVEL: "INFO"
+
+  # ── Gap E: W3C traceparent propagation (ADR-013) ───────────────────────────
+  # Propagates the W3C traceparent header into all upstream MCP server requests
+  # so that Context Forge OTel spans and Boundary session recordings share the
+  # same trace ID. The Boundary session_connection_limit target attribute stores
+  # the trace ID as a correlation key.
+  OTEL_PROPAGATORS: "tracecontext,baggage"
+  OTEL_TRACES_SAMPLER: "always_on"
+  # Inject trace ID into Boundary authorize-session calls as X-Correlation-ID
+  # Context Forge reads this and passes it as a Boundary session annotation.
+  BOUNDARY_TRACE_HEADER: "X-Correlation-ID"
+
+  # ── Gap A: OPA semantic authorization endpoint ────────────────────────────
+  # Context Forge calls this before proxying any tools/call to an upstream MCP server.
+  # The OPA sidecar evaluates mcp-tool-authz.rego and returns allow/deny + reason.
+  # Endpoint is loopback-only (127.0.0.1) — the OPA sidecar is NOT externally reachable.
+  OPA_AUTHZ_ENABLED: "true"
+  OPA_AUTHZ_ENDPOINT: "http://127.0.0.1:8181/v1/data/mcp/authz"
+  OPA_AUTHZ_TIMEOUT_MS: "50"    # OPA policy eval is sub-ms; 50ms is generous
+  # OPA_DENY_ON_TIMEOUT: if OPA times out, deny the request (fail-closed)
+  OPA_DENY_ON_TIMEOUT: "true"
+
+  # ── SSRF protection (block cloud metadata endpoints) ──────────────────────
+  SSRF_BLOCKED_NETWORKS: '["169.254.169.254/32","169.254.169.123/32","fd00::1/128","169.254.0.0/16","fe80::/10"]'
+  SSRF_BLOCKED_HOSTS: '["metadata.google.internal","metadata.internal"]'
+
+  # ── HTTP server (gunicorn, single worker for lab) ─────────────────────────
+  HTTP_SERVER: "gunicorn"
+  GUNICORN_WORKERS: "1"
+  GUNICORN_TIMEOUT: "600"
+  GUNICORN_MAX_REQUESTS: "10000"
+  GUNICORN_PRELOAD_APP: "true"
+  DISABLE_ACCESS_LOG: "false"         # Keep access log on in lab for visibility
+
+---
+# ── Deployment: context-forge ─────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: context-forge
+  namespace: inference
+  labels:
+    app: context-forge
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: mcp-gateway
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"    # After mcp-kubernetes and mcp-prometheus are ready
+spec:
+  replicas: 1                            # Lab: single replica. Production: 2+ with PostgreSQL + Redis.
+  selector:
+    matchLabels:
+      app: context-forge
+  template:
+    metadata:
+      labels:
+        app: context-forge
+        app.kubernetes.io/name: context-forge
+        platform.ai/scrape: "true"
+        vault-agent: "true"
+      annotations:
+        # ── Vault Agent Sidecar ────────────────────────────────────────────────
+        # Injects three secrets:
+        #   1. JWT_SECRET_KEY          — signs all issued tokens (32-byte hex)
+        #   2. AUTH_ENCRYPTION_SECRET  — AES key for encrypting stored auth headers
+        #   3. PLATFORM_ADMIN_PASSWORD — bootstrap admin password
+        # All three are rendered to /vault/secrets/ as plain files.
+        # Context Forge reads them via VAULT_SECRETS_DIR=/vault/secrets at startup.
+        #
+        # Secret paths in Vault KV-v2:
+        #   secret/data/ai-platform/context-forge/jwt-secret-key
+        #   secret/data/ai-platform/context-forge/auth-encryption-secret
+        #   secret/data/ai-platform/context-forge/admin-password
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "context-forge-role"
+
+        # Secret 1: JWT_SECRET_KEY
+        vault.hashicorp.com/agent-inject-secret-jwt-secret-key: >-
+          secret/data/ai-platform/context-forge/jwt-secret-key
+        vault.hashicorp.com/agent-inject-template-jwt-secret-key: |
+          {{- with secret "secret/data/ai-platform/context-forge/jwt-secret-key" -}}
+          {{ .Data.data.value }}
+          {{- end }}
+        # File written to: /vault/secrets/jwt-secret-key
+        # Container reads via env: JWT_SECRET_KEY_FILE=/vault/secrets/jwt-secret-key
+        # OR via entrypoint: export JWT_SECRET_KEY=$(cat /vault/secrets/jwt-secret-key)
+
+        # Secret 2: AUTH_ENCRYPTION_SECRET
+        vault.hashicorp.com/agent-inject-secret-auth-encryption-secret: >-
+          secret/data/ai-platform/context-forge/auth-encryption-secret
+        vault.hashicorp.com/agent-inject-template-auth-encryption-secret: |
+          {{- with secret "secret/data/ai-platform/context-forge/auth-encryption-secret" -}}
+          {{ .Data.data.value }}
+          {{- end }}
+
+        # Secret 3: PLATFORM_ADMIN_PASSWORD
+        vault.hashicorp.com/agent-inject-secret-admin-password: >-
+          secret/data/ai-platform/context-forge/admin-password
+        vault.hashicorp.com/agent-inject-template-admin-password: |
+          {{- with secret "secret/data/ai-platform/context-forge/admin-password" -}}
+          {{ .Data.data.value }}
+          {{- end }}
+
+        # ── Prometheus metrics ─────────────────────────────────────────────────
+        # Context Forge exposes /metrics/prometheus on port 8000 (JWT-authenticated).
+        # The bootstrap Job mints a long-lived Prometheus scrape token. The ServiceMonitor
+        # reads it from the mcpgateway-metrics-token Secret.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics/prometheus"
+
+    spec:
+      serviceAccountName: context-forge-sa
+      automountServiceAccountToken: false
+
+      # ── SPIFFE identity annotation (Gap B) ─────────────────────────────────
+      # Context Forge uses the same mcp-server-sa SPIFFE URI for its Vault auth.
+      # The annotation is read by the SPIRE agent to determine which workload
+      # registrations apply to this pod.
+
+      securityContext:
+        runAsUser: 10001     # matches Context Forge container image UID
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Init container: wait for backend MCP servers ─────────────────────────
+      initContainers:
+        - name: wait-for-mcp-backends
+          image: curlimages/curl:8.5.0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mcp-kubernetes..."
+              until curl -sf http://mcp-kubernetes.inference.svc.cluster.local:8080/healthz; do
+                sleep 3
+              done
+              echo "Waiting for mcp-prometheus..."
+              until curl -sf http://mcp-prometheus.inference.svc.cluster.local:8081/healthz; do
+                sleep 3
+              done
+              echo "Both MCP backends ready. Context Forge starting."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+      containers:
+        # ── OPA Sidecar (Gap A: semantic authorization) ──────────────────────
+        # Evaluates mcp-tool-authz.rego on EVERY tools/call before proxying.
+        # Bound to 127.0.0.1 only — not reachable from outside the pod.
+        # Decision logs emitted to stdout → Grafana Loki via the log pipeline.
+        - name: opa
+          image: openpolicyagent/opa:0.68.0-static   # static binary — no shell
+          args:
+            - "run"
+            - "--server"
+            - "--addr=127.0.0.1:8181"
+            - "--set=decision_logs.console=true"
+            - "--set=decision_logs.reporting.min_delay_seconds=1"
+            - "--set=decision_logs.reporting.max_delay_seconds=10"
+            - "--ignore=*_test.rego"            # do not load test files at runtime
+            - "/policies/mcp-tool-authz.rego"
+          livenessProbe:
+            httpGet: { path: /health, port: 8181 }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /health?bundle=true, port: 8181 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: opa-policies
+              mountPath: /policies
+              readOnly: true
+
+        - name: context-forge
+          # Image: ghcr.io/ibm/mcp-context-forge
+          # ARM64: check ghcr.io/ibm/mcp-context-forge manifest for arm64 support.
+          # If ARM64 layer is missing, build locally:
+          #   docker build --platform linux/arm64 -t context-forge:local .
+          image: ghcr.io/ibm/mcp-context-forge:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: gateway
+              containerPort: 4444
+              protocol: TCP
+            - name: metrics
+              containerPort: 8000
+              protocol: TCP
+
+          # ── Environment: non-secret variables from ConfigMap ──────────────────
+          envFrom:
+            - configMapRef:
+                name: context-forge-config
+
+          # ── Environment: secret paths (values read from files by the app) ─────
+          # Context Forge supports _FILE suffix convention for secret env vars:
+          # the app reads the file path and loads the secret value at startup.
+          env:
+            - name: JWT_SECRET_KEY_FILE
+              value: "/vault/secrets/jwt-secret-key"
+            - name: AUTH_ENCRYPTION_SECRET_FILE
+              value: "/vault/secrets/auth-encryption-secret"
+            - name: PLATFORM_ADMIN_PASSWORD_FILE
+              value: "/vault/secrets/admin-password"
+            # Admin email (not secret — bootstraps the admin user account)
+            - name: PLATFORM_ADMIN_EMAIL
+              value: "admin@ai-platform.internal"
+            - name: BASIC_AUTH_USER
+              value: "admin"
+            # Basic auth password uses the same Vault-injected admin password.
+            # Context Forge reads BASIC_AUTH_PASSWORD_FILE if set.
+            - name: BASIC_AUTH_PASSWORD_FILE
+              value: "/vault/secrets/admin-password"
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Context Forge writes to its SQLite DB and temp files
+            capabilities:
+              drop: ["ALL"]
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 4444
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 70
+            successThreshold: 1
+            failureThreshold: 8
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4444
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 70
+            failureThreshold: 10
+
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+            - name: data
+              mountPath: /data          # SQLite database file
+            - name: catalog-config
+              mountPath: /config        # mcp-catalog.yml mounted from ConfigMap
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory              # tmpfs — injected secrets never touch disk
+        - name: data
+          emptyDir: {}                  # Lab: ephemeral. Production: PVC + PostgreSQL.
+        - name: catalog-config
+          configMap:
+            name: context-forge-catalog # See context-forge-catalog.yaml
+        - name: tmp
+          emptyDir: {}
+        # ── OPA policy bundle volume (Gap A) ──────────────────────────────
+        # Mounted from the ConfigMap managed by terraform/opa-configmap.tf.
+        # Policy updates (via ArgoCD ConfigMap sync) take effect on pod restart.
+        - name: opa-policies
+          configMap:
+            name: opa-mcp-policy-bundle
+
+---
+# ── Service: context-forge ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: context-forge
+  namespace: inference
+  labels:
+    app: context-forge
+    app.kubernetes.io/name: context-forge
+    platform.ai/managed-by: argocd
+spec:
+  selector:
+    app: context-forge
+  ports:
+    - name: gateway
+      port: 4444
+      targetPort: 4444
+      protocol: TCP
+    - name: metrics
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP

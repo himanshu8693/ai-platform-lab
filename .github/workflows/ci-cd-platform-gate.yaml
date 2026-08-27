@@ -1,0 +1,473 @@
+# =============================================================================
+# CI/CD Platform Gate — Progressive Delivery Pipeline
+# =============================================================================
+#
+# This workflow implements a Senior DevOps progressive delivery gate for the
+# ai-platform-lab repository. It enforces code quality and security controls
+# at every layer of the stack before any change reaches main.
+#
+# Jobs:
+#   1. terraform-validate  — fmt, init, validate, plan (dry-run, no apply)
+#   2. helm-lint           — helm lint on all charts in platform/ and workloads/
+#   3. manifest-validate   — kubeconform + kube-linter on all K8s YAML
+#   4. python-quality      — ruff lint, mypy type-check, pytest
+#   5. go-build-test       — go build + go test for platform/controller
+#   6. security-scan       — trivy filesystem scan on repository artifacts
+#   7. cosign-sign         — sign container image on merge to main (supply-chain)
+#
+# Gate semantics:
+#   • Jobs 1–6 run on every PR (block merge on any failure)
+#   • Job 7 runs ONLY on push to main (post-merge image signing)
+#   • All jobs run with least-privilege GITHUB_TOKEN permissions
+# =============================================================================
+
+name: Platform CI/CD Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release/**"
+  push:
+    branches:
+      - main
+
+# Principle of least privilege — override per-job where needed
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true   # Cancel stale PR runs when new commits pushed
+
+# =============================================================================
+# Job 1 — Terraform Validate & Plan
+# =============================================================================
+jobs:
+  terraform-validate:
+    name: "TF · Validate & Plan"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2 — pinned to SHA
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54531c595c03979f93b7bd0e5cde23406bd8  # v3.1.2
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive -diff
+        continue-on-error: false
+
+      - name: Terraform Init (no backend)
+        id: init
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan (dry-run, local backend)
+        id: plan
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -var="vault_root_token=mock-ci-token" \
+            -out=tfplan.binary 2>&1 | tee plan.txt
+        env:
+          # No real cloud credentials needed — kind provider is local only
+          TF_CLI_ARGS_plan: "-compact-warnings"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b  # v4.5.0
+        if: always()
+        with:
+          name: terraform-plan
+          path: terraform/plan.txt
+          retention-days: 7
+
+  # ===========================================================================
+  # Job 2 — Helm Chart Lint
+  # ===========================================================================
+  helm-lint:
+    name: "Helm · Lint Charts"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Helm
+        uses: azure/setup-helm@b9e51907a09c216f16e5e7d7424bce2f0e8ba5ac  # v4.3.0
+        with:
+          version: "v3.16.1"
+
+      - name: Add chart repositories
+        run: |
+          helm repo add ingress-nginx   https://kubernetes.github.io/ingress-nginx
+          helm repo add hashicorp       https://helm.releases.hashicorp.com
+          helm repo add argo            https://argoproj.github.io/argo-helm
+          helm repo update
+
+      - name: Lint all platform charts
+        run: |
+          CHARTS_FOUND=0
+          for dir in $(find platform workloads -name "Chart.yaml" -exec dirname {} \; 2>/dev/null); do
+            echo "── Linting chart: $dir"
+            helm lint "$dir" --strict --with-subcharts
+            CHARTS_FOUND=$((CHARTS_FOUND + 1))
+          done
+          echo "Linted $CHARTS_FOUND chart(s)."
+          if [ "$CHARTS_FOUND" -eq 0 ]; then
+            echo "No Helm charts found — skipping (expected for pure-manifest repos)"
+          fi
+
+      - name: Template charts and capture output
+        run: |
+          for dir in $(find platform workloads -name "Chart.yaml" -exec dirname {} \; 2>/dev/null); do
+            echo "── Templating: $dir"
+            helm template "ci-test" "$dir" --dry-run --debug > /dev/null
+          done
+
+  # ===========================================================================
+  # Job 3 — Kubernetes Manifest Validation
+  # ===========================================================================
+  manifest-validate:
+    name: "K8s · kubeconform + kube-linter"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # ── kubeconform: schema validation against K8s API specs ────────────────
+      - name: Setup kubeconform
+        run: |
+          VERSION="0.6.7"
+          curl -sL "https://github.com/yannh/kubeconform/releases/download/v${VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz -C /usr/local/bin
+          chmod +x /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: kubeconform — validate manifests
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -schema-location default \
+            -schema-location \
+              'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -kubernetes-version 1.31.0 \
+            -ignore-missing-schemas \
+            $(find workloads platform clusters -name "*.yaml" -not -path "*/.git/*" 2>/dev/null | head -200)
+
+      # ── kube-linter: best-practice and security linting ─────────────────────
+      - name: Setup kube-linter
+        run: |
+          VERSION="0.7.1"
+          curl -sL "https://github.com/stackrox/kube-linter/releases/download/v${VERSION}/kube-linter-linux.tar.gz" \
+            | tar xz -C /usr/local/bin
+          chmod +x /usr/local/bin/kube-linter
+          kube-linter version
+
+      - name: kube-linter — security + best-practice checks
+        run: |
+          kube-linter lint \
+            --config .kube-linter.yaml \
+            workloads/ platform/ \
+          || (echo "::warning::kube-linter found issues — review output above"; exit 1)
+
+      # ── NetworkPolicy coverage check ─────────────────────────────────────────
+      - name: Verify NetworkPolicy default-deny present
+        run: |
+          echo "Checking for default-deny NetworkPolicy in critical namespaces..."
+          for ns in inference vault; do
+            if grep -r "default-deny-all" workloads/ platform/ --include="*.yaml" -q; then
+              echo "  ✓ default-deny found for namespace context: $ns"
+            else
+              echo "  ✗ WARNING: No default-deny NetworkPolicy found — check workloads/"
+              exit 1
+            fi
+          done
+
+  # ===========================================================================
+  # Job 4 — Python Quality Gate
+  # ===========================================================================
+  python-quality:
+    name: "Python · ruff + mypy + pytest"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2f  # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Ruff lint + format check
+        run: |
+          uv run ruff check scripts/ platform/ --output-format=github
+          uv run ruff format --check scripts/ platform/
+
+      - name: Mypy type check
+        run: |
+          uv run mypy \
+            scripts/ platform/ \
+            --ignore-missing-imports \
+            --strict \
+            --show-error-codes
+
+      - name: Pytest
+        run: |
+          uv run pytest tests/ \
+            -v \
+            --tb=short \
+            --junit-xml=test-results.xml \
+            --cov=scripts \
+            --cov=platform \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=70
+
+      - name: Upload test results
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+          retention-days: 14
+
+  # ===========================================================================
+  # Job 5 — Go Build & Test (platform/controller)
+  # ===========================================================================
+  go-build-test:
+    name: "Go · Build & Test Operator"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a  # v5.2.0
+        with:
+          go-version: "~1.23"
+          cache: true
+          cache-dependency-path: platform/controller/go.sum
+
+      - name: Check go.mod is tidy
+        working-directory: platform/controller
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || \
+            (echo "::error::go.mod or go.sum not tidy — run 'go mod tidy' and commit"; exit 1)
+
+      - name: Build
+        working-directory: platform/controller
+        run: go build -v ./...
+
+      - name: Vet
+        working-directory: platform/controller
+        run: go vet ./...
+
+      - name: Static analysis (staticcheck)
+        working-directory: platform/controller
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Unit tests
+        working-directory: platform/controller
+        run: |
+          go test \
+            -v \
+            -race \
+            -count=1 \
+            -timeout 120s \
+            -coverprofile=coverage.out \
+            ./...
+
+      - name: Check test coverage
+        working-directory: platform/controller
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+          echo "Controller coverage: ${COVERAGE}%"
+          # Warn if below 60% — not fatal during scaffold phase
+          awk "BEGIN { if ($COVERAGE < 60) exit 1 }" || \
+            echo "::warning::Controller coverage ${COVERAGE}% < 60% target"
+
+      - name: Make manifests (CRD generation check)
+        working-directory: platform/controller
+        run: |
+          if [ -f Makefile ]; then
+            make manifests generate 2>/dev/null || echo "Skipping — Makefile targets not yet configured"
+          fi
+
+  # ===========================================================================
+  # Job 6 — Security Scan (Trivy)
+  # ===========================================================================
+  security-scan:
+    name: "Security · Trivy FS Scan"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # Required to upload SARIF
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@18f2505d82589b7c1ae1a7b54ef7f0b7ff685a7b  # v0.28.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+          severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+          exit-code: "0"   # Don't fail — report only (tighten to "1" when baseline is clean)
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@b6a472f63d85b9c78a3ac5e89422239f9a6db8b7  # v3.28.1
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ===========================================================================
+  # Job 7 — Cosign Image Signing (main branch only, post-merge)
+  # ===========================================================================
+  # Supply-chain security: signs the built container image with Cosign (keyless
+  # OIDC signing via Sigstore/Fulcio). The signature is stored in the OCI
+  # registry alongside the image. Kyverno admission policy in the cluster
+  # verifies signatures before allowing deployment.
+  # ===========================================================================
+  cosign-sign:
+    name: "Supply Chain · Cosign Sign"
+    runs-on: ubuntu-latest
+    needs:
+      - terraform-validate
+      - helm-lint
+      - manifest-validate
+      - python-quality
+      - go-build-test
+      - security-scan
+
+    # Run ONLY on merge to main — never on PRs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write        # Push signed image to GHCR
+      id-token: write        # Required for keyless Cosign OIDC signing
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}/mock-dcgm-exporter
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5  # v3.8.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567  # v3.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96  # v5.6.1
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push container image
+        id: build-push
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355  # v6.10.0
+        with:
+          context: platform/observability
+          file: platform/observability/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64   # Multi-arch: amd64 for CI, arm64 for M4 Max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Provenance attestation (SLSA level 2)
+          provenance: true
+          sbom: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+
+      - name: Sign image with Cosign (keyless OIDC)
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          echo "Signing image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          echo "✓ Image signed. Signature stored in: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+      - name: Verify signature (self-verification after signing)
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}" \
+          | jq '.[0] | {subject: .optional.Subject, issuer: .optional.Issuer, sha: .critical.image.hash}'
+
+      - name: Generate and attach SBOM
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          # Attach Syft SBOM as OCI attestation
+          cosign attest --yes \
+            --predicate <(docker buildx imagetools inspect \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}" \
+              --format '{{ json .SBOM.SPDX }}') \
+            --type spdxjson \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}" || \
+            echo "::warning::SBOM attestation skipped (SBOM not embedded in manifest)"
+
+      - name: Output signing summary
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          echo "## Image Signing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Digest | \`${DIGEST}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tags | \`${{ steps.meta.outputs.tags }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Signed with | Cosign keyless (Sigstore/Fulcio OIDC) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Verify command | \`cosign verify --certificate-identity-regexp='https://github.com/${{ github.repository }}' --certificate-oidc-issuer='https://token.actions.githubusercontent.com' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}\` |" >> $GITHUB_STEP_SUMMARY

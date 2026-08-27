@@ -1,0 +1,88 @@
+---
+# =============================================================================
+# topologies/consul-admin-partition/scenarios/ap-network-split.yaml
+# Fault Scenario: Admin Partition Network Split
+#
+# Simulates: Sev-1 where cross-partition gossip traffic is blocked by a
+# misconfigured firewall rule or NetworkPolicy, causing services in partition-b
+# to be unreachable from partition-a despite valid intentions.
+#
+# Symptoms reproduced:
+#   • service-a receives 503 from envoy sidecar when calling service-b
+#   • Consul UI shows partition-b services as "critical" from partition-a view
+#   • `consul intention check` returns "allowed" but traffic still fails
+#   • Consul gossip health: "Serf gossip too slow" warning in Consul server logs
+#
+# Root cause: NetworkPolicy blocks UDP 8301 (LAN gossip) between namespaces.
+#
+# AI RCA query to run after injecting this scenario:
+#   "Check Consul pod events and list all NetworkPolicies in the
+#    topology-consul-admin-partition namespace. Why is service-b unreachable?"
+#
+# Apply with:
+#   bash scripts/scenario-inject.sh consul-admin-partition ap-network-split
+#
+# Remediate with:
+#   kubectl delete networkpolicy consul-gossip-block \
+#     -n topology-consul-admin-partition
+# =============================================================================
+
+# Block cross-partition gossip — the fault being simulated.
+# This NetworkPolicy drops UDP 8301 from the Consul server pod,
+# preventing partition agents from maintaining health state.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consul-gossip-block
+  namespace: topology-consul-admin-partition
+  labels:
+    platform.ai/scenario: "ap-network-split"
+    platform.ai/fault-type: "network-partition"
+    # This label makes the fault visible to the MCP kubernetes tool.
+    # AI agent query: list_pods with label platform.ai/scenario=ap-network-split
+    platform.ai/active-fault: "true"
+  annotations:
+    ephemeral-lab/scenario-name: "ap-network-split"
+    ephemeral-lab/fault-description: >
+      Blocks Consul LAN gossip (UDP 8301) simulating a cross-partition
+      network split. Services in partition-b become unreachable from partition-a.
+    ephemeral-lab/remediation: >
+      kubectl delete networkpolicy consul-gossip-block
+      -n topology-consul-admin-partition
+    ephemeral-lab/rca-hint: >
+      Check: consul members, consul intention check service-a service-b,
+      kubectl get events -n topology-consul-admin-partition --sort-by=.lastTimestamp
+spec:
+  podSelector:
+    matchLabels:
+      app: consul-server
+  policyTypes:
+    - Egress
+    - Ingress
+  egress:
+    # Allow all egress EXCEPT gossip UDP 8301 (omitting port = blocking it)
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8300    # Consul RPC
+        - protocol: TCP
+          port: 8500    # Consul HTTP API
+        - protocol: TCP
+          port: 8600    # Consul DNS (TCP)
+        - protocol: UDP
+          port: 8600    # Consul DNS (UDP)
+        # Note: UDP 8301 (LAN gossip) is intentionally absent — this is the fault.
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8300
+        - protocol: TCP
+          port: 8500
+        - protocol: TCP
+          port: 8600
+        - protocol: UDP
+          port: 8600
+        # Note: UDP 8301 ingress also absent — complete gossip blackout.

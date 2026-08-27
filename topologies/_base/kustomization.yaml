@@ -1,0 +1,22 @@
+# =============================================================================
+# topologies/_base/kustomization.yaml
+# Shared Kustomize base for all ephemeral topologies
+#
+# Each topology directory inherits this base via:
+#   bases:
+#     - ../../_base
+# and overrides with its own namePrefix, commonLabels, and patches.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace-template.yaml
+
+# Each topology overrides this prefix in its own kustomization.yaml
+# e.g.: namePrefix: topology-consul-admin-partition-
+namePrefix: topology-
+
+commonLabels:
+  platform.ai/component: "ephemeral-topology"
+  platform.ai/managed-by: "argocd"

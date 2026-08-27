@@ -1,0 +1,85 @@
+# =============================================================================
+# topologies/consul-admin-partition/values.yaml
+# Helm values for Consul Admin Partition topology
+#
+# Consul is deployed in dev mode with admin partitions enabled.
+# Three partitions: default (server), partition-a, partition-b.
+# Two test services simulate cross-partition service mesh traffic.
+# =============================================================================
+
+# ── Global topology metadata ──────────────────────────────────────────────────
+topology:
+  name: "consul-admin-partition"
+  ttlSeconds: 7200
+  description: "Consul Admin Partition split topology for Sev-1 reproduction"
+
+# ── Consul server ─────────────────────────────────────────────────────────────
+consul:
+  enabled: true
+  image: "hashicorp/consul:1.19"
+  replicas: 1          # Single server — adequate for partition topology testing
+
+  # Admin Partitions require Consul Enterprise license in production.
+  # In this lab: use Consul OSS with connectInject enabled to simulate
+  # the service mesh behaviour without the partition API.
+  # For true AP simulation: inject a Consul Enterprise trial license via Vault.
+  adminPartitions:
+    enabled: false     # Set true when Consul Enterprise license is available
+    defaultPartition: "default"
+    partitions:
+      - name: "partition-a"
+        description: "Simulates customer partition A — service mesh client"
+      - name: "partition-b"
+        description: "Simulates customer partition B — service mesh server"
+
+  connectInject:
+    enabled: true
+    default: false     # Opt-in per workload, not namespace-wide
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+# ── Test service A (client — partition-a) ─────────────────────────────────────
+serviceA:
+  enabled: true
+  image: "curlimages/curl:8.5.0"
+  partition: "partition-a"
+  # Consul service registration labels
+  consulService: "service-a"
+  consulNamespace: "default"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+
+# ── Test service B (server — partition-b) ─────────────────────────────────────
+serviceB:
+  enabled: true
+  image: "hashicorp/http-echo:1.0"
+  partition: "partition-b"
+  consulService: "service-b"
+  consulNamespace: "default"
+  echoText: "hello from partition-b"
+  port: 5678
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+
+# ── Observability (inherits from platform observability stack) ─────────────────
+observability:
+  # Re-use the platform Prometheus — topology metrics labelled by topology name.
+  prometheusUrl: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  # OTel collector endpoint for topology-scoped traces.
+  otelEndpoint: "http://otel-collector.monitoring.svc.cluster.local:4317"

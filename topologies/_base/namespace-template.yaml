@@ -1,0 +1,38 @@
+# =============================================================================
+# topologies/_base/namespace-template.yaml
+# Base Namespace Template for Ephemeral Topology Namespaces
+#
+# Every topology launched by the ApplicationSet Git generator creates its own
+# namespace. This template is overlaid by each topology's kustomization.yaml
+# via the namePrefix transformer, which produces e.g.:
+#   topology-consul-admin-partition   (for topologies/consul-admin-partition/)
+#   topology-vault-ha-raft            (for topologies/vault-ha-raft/)
+#
+# Labels on the namespace enable:
+#   • Kueue LocalQueue routing (platform.ai/tenant)
+#   • Consul sidecar injection (consul.hashicorp.com/connect-inject)
+#   • ArgoCD pruning (argocd.argoproj.io/managed-by)
+#   • Pod Security Admission (pod-security.kubernetes.io/enforce)
+#   • TTL tracking (ephemeral-lab/ttl-seconds — read by the TTL controller)
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: topology-base       # Overridden by kustomize namePrefix in each topology
+  labels:
+    platform.ai/component:       "ephemeral-topology"
+    platform.ai/managed-by:      "argocd"
+    platform.ai/tenant:          "topology"
+    # Pod Security Admission: restricted profile enforced at namespace level.
+    # Individual topology values.yaml may relax to baseline for legacy workloads.
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/audit:   "restricted"
+    pod-security.kubernetes.io/warn:    "restricted"
+  annotations:
+    # TTL annotation: read by scripts/ttl-teardown.sh and the future TTL operator.
+    # Format: seconds as a string. 0 = no auto-teardown.
+    ephemeral-lab/ttl-seconds:    "7200"
+    # Scenario tracking: set by scripts/scenario-inject.sh when a fault is active.
+    ephemeral-lab/active-scenario: "none"
+    # ArgoCD: cascade delete all resources when the topology directory is removed from Git.
+    argocd.argoproj.io/managed-by: "argocd"

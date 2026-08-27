@@ -1,0 +1,299 @@
+---
+# =============================================================================
+# NetworkPolicy additions for IBM Context Forge MCP Gateway
+#
+# Architecture change from ADR-006 → ADR-007:
+#
+#   REMOVED:  ai-assistant → mcp-kubernetes  (direct)
+#   REMOVED:  ai-assistant → mcp-prometheus  (direct)
+#   ADDED:    ai-assistant → context-forge :4444
+#   ADDED:    context-forge → mcp-kubernetes :8080
+#   ADDED:    context-forge → mcp-prometheus :8081
+#   ADDED:    context-forge → vault :8200 (Vault Agent sidecar)
+#   UNCHANGED: mcp-kubernetes → K8s API :6443
+#   UNCHANGED: mcp-prometheus → Prometheus :9090
+#
+# The ai-assistant's NetworkPolicy is now minimal: only one downstream
+# connection (to context-forge). All other paths remain unchanged.
+#
+# NOTE: The old Policies 8 and 9 from workloads/ai-assistant/networkpolicy.yaml
+# (ai-assistant → mcp-kubernetes, ai-assistant → mcp-prometheus) should be
+# DELETED. They are superseded by this file. The direct paths must NOT remain
+# open — that would defeat the purpose of Context Forge as the exclusive gateway.
+#
+# Policies in this file:
+#   16. ai-assistant egress → context-forge :4444
+#   17. context-forge ingress ← ai-assistant only
+#   18. context-forge egress → mcp-kubernetes :8080
+#   19. context-forge egress → mcp-prometheus :8081
+#   20. context-forge egress → vault :8200 (Vault Agent sidecar)
+#   21. context-forge egress → Prometheus :9090 (metrics scrape port in monitoring ns)
+#   22. Prometheus scrape → context-forge :8000 (metrics endpoint)
+# =============================================================================
+
+# ── Policy 16 — ai-assistant egress to context-forge (single gateway) ────────
+# This is the ONLY downstream connection the ai-assistant is allowed to make
+# for MCP tool calls. Direct paths to mcp-kubernetes and mcp-prometheus are
+# closed. The single-gateway rule is the blast-radius improvement over ADR-006.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-assistant-to-context-forge
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/replaces: "allow-ai-assistant-to-mcp-kubernetes, allow-ai-assistant-to-mcp-prometheus"
+    policy.security/adr: "ADR-007"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-assistant
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: context-forge
+      ports:
+        - protocol: TCP
+          port: 4444    # Context Forge MCP gateway API
+
+---
+# ── Policy 17 — context-forge ingress from ai-assistant only ─────────────────
+# Context Forge accepts tool call connections ONLY from the ai-assistant pod.
+# No other service in the cluster may call Context Forge's MCP endpoint.
+# (The Admin UI port 4444 is intentionally behind the same policy — the UI is
+# accessed via Boundary JIT tunnel, not via pod-to-pod traffic.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-context-forge-from-assistant
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/threat-model: >
+      Context Forge holds the Virtual Server tool whitelist and issues JWTs.
+      If any other pod could reach Context Forge, it could enumerate the
+      registered backend servers or attempt to register new ones.
+      Restricting ingress to ai-assistant prevents this.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: context-forge
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 4444
+    # Prometheus scrape ingress (from monitoring namespace, metrics port)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8000    # Context Forge /metrics/prometheus endpoint
+
+---
+# ── Policy 18 — context-forge egress to mcp-kubernetes ───────────────────────
+# Context Forge proxies tool calls to the Kubernetes MCP server.
+# This path was previously held by ai-assistant (ADR-006). Now context-forge
+# is the sole authorised client.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-context-forge-to-mcp-kubernetes
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: context-forge
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-kubernetes
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# ── Policy 19 — context-forge egress to mcp-prometheus ───────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-context-forge-to-mcp-prometheus
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: context-forge
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-prometheus
+      ports:
+        - protocol: TCP
+          port: 8081
+
+---
+# ── Policy 20 — context-forge egress to Vault (Vault Agent sidecar) ──────────
+# Context Forge's Vault Agent sidecar must reach Vault to fetch JWT_SECRET_KEY
+# and AUTH_ENCRYPTION_SECRET on startup and on renewal.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-context-forge-vault-agent
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: context-forge
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - protocol: TCP
+          port: 8200    # Vault API
+        - protocol: TCP
+          port: 8201    # Vault cluster port (HA Raft)
+
+---
+# ── Policy 21 — context-forge egress to OTel collector ───────────────────────
+# Context Forge emits OpenTelemetry traces for every tool call.
+# These flow to the OTel Collector in the monitoring namespace, then to Tempo.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-context-forge-otel
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: context-forge
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 4317    # OTel gRPC (OTLP)
+        - protocol: TCP
+          port: 4318    # OTel HTTP (OTLP)
+
+---
+# ── Update to Policy 13 — mcp-kubernetes ingress now from context-forge ───────
+# ADR-006 allowed ai-assistant to call mcp-kubernetes directly.
+# ADR-007 changes this: only context-forge may call mcp-kubernetes.
+# This policy REPLACES allow-ingress-mcp-kubernetes-from-assistant.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-kubernetes-from-context-forge
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/replaces: "allow-ingress-mcp-kubernetes-from-assistant (ADR-006)"
+    policy.security/adr: "ADR-007"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-kubernetes
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: context-forge    # CHANGED: was app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# ── Update to Policy 14 — mcp-prometheus ingress now from context-forge ───────
+# Same change as Policy 13 above.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-mcp-prometheus-from-context-forge
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: ai-assistant-platform
+    platform.ai/phase: "6"
+  annotations:
+    policy.security/replaces: "allow-ingress-mcp-prometheus-from-assistant (ADR-006)"
+    policy.security/adr: "ADR-007"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-prometheus
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: context-forge    # CHANGED: was app: ai-assistant
+      ports:
+        - protocol: TCP
+          port: 8081

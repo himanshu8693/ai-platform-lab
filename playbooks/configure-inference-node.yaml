@@ -1,0 +1,105 @@
+---
+# playbooks/configure-inference-node.yaml
+# G6 — Ansible: idempotent RHEL node configuration for inference workload
+# Session 1 of 2: inventory, modules, systemd service, SELinux hardening
+#
+# Usage:
+#   ansible-playbook -i inventories/inference-nodes/hosts.yaml \
+#     playbooks/configure-inference-node.yaml --check    # dry-run
+#   ansible-playbook -i inventories/inference-nodes/hosts.yaml \
+#     playbooks/configure-inference-node.yaml            # apply
+#
+# References: docs/curriculum/master_transition_blueprint.md §Phase 4b
+
+- name: Configure inference node for Ollama workload
+  hosts: inference_nodes
+  become: true
+  vars:
+    ollama_version: "0.3.12"
+    inference_user: "inference"
+    inference_data_dir: "/var/lib/inference"
+    inference_model_dir: "/var/lib/inference/models"
+    ollama_port: 11434
+
+  tasks:
+    - name: Ensure inference group exists
+      ansible.builtin.group:
+        name: "{{ inference_user }}"
+        state: present
+
+    - name: Ensure inference user exists (no login shell, system account)
+      ansible.builtin.user:
+        name: "{{ inference_user }}"
+        group: "{{ inference_user }}"
+        shell: /sbin/nologin
+        create_home: false
+        system: true
+        state: present
+
+    - name: Create inference data directory
+      ansible.builtin.file:
+        path: "{{ inference_data_dir }}"
+        state: directory
+        owner: "{{ inference_user }}"
+        group: "{{ inference_user }}"
+        mode: "0750"
+
+    - name: Create inference model directory
+      ansible.builtin.file:
+        path: "{{ inference_model_dir }}"
+        state: directory
+        owner: "{{ inference_user }}"
+        group: "{{ inference_user }}"
+        mode: "0750"
+
+    - name: Install required packages
+      ansible.builtin.dnf:
+        name:
+          - curl
+          - jq
+          - systemd
+        state: present
+        update_cache: true
+
+    - name: Deploy Ollama systemd service unit
+      ansible.builtin.template:
+        src: templates/ollama.service.j2
+        dest: /etc/systemd/system/ollama.service
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "systemd-analyze verify %s"
+      notify: Reload systemd
+
+    - name: Ensure Ollama service is enabled and running
+      ansible.builtin.systemd:
+        name: ollama
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Set SELinux context on inference data directory (RHEL/Fedora)
+      community.general.sefcontext:
+        target: "{{ inference_data_dir }}(/.*)?"
+        setype: var_t
+        state: present
+      when: ansible_selinux is defined and ansible_selinux.status == "enabled"
+      notify: Restore SELinux context
+
+    - name: Open firewall port for Ollama API (if firewalld active)
+      ansible.posix.firewalld:
+        port: "{{ ollama_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: enabled
+      when: ansible_facts.services['firewalld.service'] is defined
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restore SELinux context
+      ansible.builtin.command:
+        cmd: "restorecon -R {{ inference_data_dir }}"
+      changed_when: true

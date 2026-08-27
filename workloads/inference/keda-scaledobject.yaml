@@ -1,0 +1,89 @@
+---
+# =============================================================================
+# KEDA ScaledObject — autoscale inference pods on vLLM queue depth + KV-cache
+#
+# Dual-trigger autoscaling strategy (ARB-required addition):
+#
+#   Trigger 1 — Queue Depth (vllm_num_waiting_requests)
+#     Scale out when requests are queuing (demand-driven scale-out).
+#     Threshold: 5 waiting requests per pod (tuned post PM-001).
+#
+#   Trigger 2 — KV-Cache Pressure (vllm_gpu_cache_usage_perc)
+#     Scale out when KV-cache utilisation exceeds 80%.
+#     Rationale: a pod can have zero waiting requests but still be OOM-bound
+#     because the KV-cache is saturated. Without this trigger, KEDA would not
+#     scale out and the pod would begin preempting requests (PM-001 root cause).
+#     Documented in RB-001 and PM-001; referenced in ADR-003.
+#
+# KEDA selects the trigger that produces the HIGHEST desired replica count
+# (logical OR semantics across triggers).
+#
+# Scale-in guard:
+#   cooldownPeriod: 300s — prevents flapping after a KV-cache spike subsides.
+#   stabilizationWindowSeconds: 120 — additional HPA-level dampening.
+#
+# Production note: on real vLLM, both metrics are emitted natively at /metrics.
+# In this lab, mock-dcgm-exporter.py emits production-identical metric shapes.
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: llama3-scaler
+  namespace: inference
+  labels:
+    app: llama3
+    platform.ai/managed-by: keda
+spec:
+  scaleTargetRef:
+    name: llama3
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  cooldownPeriod: 300
+  pollingInterval: 30
+  # Hold at least 1 replica even when queue is empty (avoids cold-start latency).
+  # For zero-replica cold-start, set minReplicaCount: 0 and accept first-request delay.
+
+  triggers:
+    # ── Trigger 1: Request Queue Depth ──────────────────────────────────────
+    # Primary demand signal: how many requests are waiting for a KV-cache slot.
+    # Tuned post PM-001: reduced from 10 → 5 to trigger earlier scale-out.
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+        metricName: vllm_num_waiting_requests
+        query: |
+          sum(vllm_num_waiting_requests{model_name="llama3.2:3b"})
+        threshold: "5"
+
+    # ── Trigger 2: KV-Cache Saturation ──────────────────────────────────────
+    # Secondary memory-pressure signal. Scales out when KV-cache fills above
+    # 80% even if the request queue appears empty. This closes the gap where
+    # PM-001 occurred: cache was saturated but waiting_requests was 0 because
+    # the scheduler was pre-emptively dropping new requests.
+    #
+    # PromQL: returns 1 when cache > 80%, 0 otherwise.
+    # KEDA threshold of 1 means: "if ANY pod's cache exceeds 80%, scale out."
+    # Using max() not avg() — one hot pod is enough to need more replicas.
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local
+        metricName: vllm_kvcache_pressure
+        query: |
+          max(vllm_gpu_cache_usage_perc{model_name="llama3.2:3b"}) > bool 0.80
+        threshold: "1"
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 30

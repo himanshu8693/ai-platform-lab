@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# topologies/consul-admin-partition/scenarios/ap-token-revoke.yaml
+# Fault Scenario: Admin Partition Token Revocation
+#
+# Simulates: Sev-1 where the Consul ACL token for partition-a is revoked
+# (or expires) while services are actively communicating. The sidecar proxies
+# lose their ability to refresh their leaf certificates, causing mTLS failures.
+#
+# Symptoms reproduced:
+#   • envoy proxy logs: "TLS handshake error: certificate expired"
+#   • Consul connect CA: leaf cert renewal fails with "permission denied"
+#   • service-a → service-b calls return 503 after ~1 min (leaf cert TTL)
+#   • `consul acl token read -self` in the partition-a namespace returns 403
+#
+# Root cause: ACL token revoked. Services continue running but lose the ability
+# to renew mTLS leaf certificates as they expire (TTL: ~72 hours by default,
+# shorter in this lab scenario at 5 minutes to make the failure observable).
+#
+# AI RCA query:
+#   "Get recent events for all pods in topology-consul-admin-partition.
+#    What PromQL query would show mTLS certificate renewal failures?"
+#
+# Apply with:
+#   bash scripts/scenario-inject.sh consul-admin-partition ap-token-revoke
+# =============================================================================
+
+# ConfigMap that records the scenario metadata for the MCP kubernetes tool.
+# The AI agent reads this to understand the active fault context.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: active-scenario-state
+  namespace: topology-consul-admin-partition
+  labels:
+    platform.ai/scenario:     "ap-token-revoke"
+    platform.ai/fault-type:   "auth-failure"
+    platform.ai/active-fault: "true"
+  annotations:
+    ephemeral-lab/scenario-name: "ap-token-revoke"
+    ephemeral-lab/injected-at:   ""    # Filled by scripts/scenario-inject.sh
+    ephemeral-lab/fault-description: >
+      Simulates revocation of the Consul ACL partition token.
+      Existing sidecar connections continue until leaf cert TTL (5 min in lab).
+      After expiry, all mTLS traffic from service-a to service-b fails.
+    ephemeral-lab/expected-symptoms: >
+      1. envoy logs: TLS handshake failures after ~5 minutes
+      2. consul intention check: 403 Unauthorized (token revoked)
+      3. service-a HTTP calls to service-b: 503 Service Unavailable
+      4. Prometheus: consul_connect_cert_expiry_seconds approaching 0
+    ephemeral-lab/remediation: >
+      vault write consul/roles/partition-a-token policies=partition-a-policy
+      consul acl token create -policy-name=partition-a-policy
+      kubectl rollout restart deployment/service-a
+      -n topology-consul-admin-partition
+data:
+  scenario: "ap-token-revoke"
+  description: "Consul Admin Partition ACL token revocation simulation"
+  fault_type: "auth-failure"
+  # Short leaf cert TTL makes the failure observable within 5 minutes.
+  consul_leaf_cert_ttl: "5m"
+  # PromQL to observe cert expiry:
+  promql_cert_expiry: "consul_connect_cert_expiry_seconds{namespace='topology-consul-admin-partition'}"
+  # kubectl command to observe the failure:
+  debug_cmd: "kubectl logs -l app=service-a -n topology-consul-admin-partition -c envoy --tail=50"

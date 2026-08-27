@@ -1,0 +1,58 @@
+---
+# =============================================================================
+# topologies/vault-ha-raft/topology.yaml
+# Ephemeral Topology: Vault HA Raft Cluster
+#
+# PURPOSE: Reproduce Sev-1 scenarios involving Vault Raft HA failures:
+# leader election delays, follower lag, snapshot restore operations, and
+# seal/unseal sequence failures — the most frequent Vault enterprise escalations.
+#
+# HOW TO LAUNCH:
+#   git push this directory → ArgoCD deploys automatically.
+#
+# HOW TO INJECT A FAULT:
+#   bash scripts/scenario-inject.sh vault-ha-raft raft-leader-kill
+#   bash scripts/scenario-inject.sh vault-ha-raft seal-auto
+#
+# TOPOLOGY LAYOUT:
+#   Namespace: topology-vault-ha-raft
+#   │
+#   ├── vault-0 (active leader)
+#   ├── vault-1 (standby follower)
+#   ├── vault-2 (standby follower)
+#   └── vault-test-client (periodic secret read — health signal)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: topology-vault-ha-raft
+  namespace: argocd
+  labels:
+    platform.ai/component:    "ephemeral-topology"
+    platform.ai/topology:     "vault-ha-raft"
+    platform.ai/managed-by:   "argocd"
+  annotations:
+    ephemeral-lab/ttl-seconds: "7200"
+    ephemeral-lab/scenarios: "raft-leader-kill,seal-auto"
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/himanshusharma/ai-platform-lab
+    targetRevision: HEAD
+    path: topologies/vault-ha-raft
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: topology-vault-ha-raft
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

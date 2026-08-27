@@ -1,0 +1,188 @@
+---
+# =============================================================================
+# Multi-Tenant Resource Quotas
+#
+# Two tenant namespaces: team-a (research, higher limits) and team-b (prod, strict)
+#
+# IMPORTANT: ResourceQuota intentionally uses CPU and memory only.
+# "apple.com/mps" is NOT a valid Kubernetes extended resource — no device
+# plugin exists for Apple MPS. Adding requests.apple.com/mps here would be
+# silently accepted by the API server but never consumed (no node advertises it),
+# causing all pods in the namespace to remain Pending indefinitely.
+# See docs/adr/ADR-003-mps-simulation-approach.md for details.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    platform.ai/tenant: team-a
+    platform.ai/tier: research
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b
+  labels:
+    platform.ai/tenant: team-b
+    platform.ai/tier: production
+---
+# ── Team A (Research) ─────────────────────────────────────────────────────────
+# Higher compute ceiling; allows experimentation with larger models.
+# Memory limit reflects that team-a models may load larger checkpoints.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-quota
+  namespace: team-a
+spec:
+  hard:
+    # Compute
+    requests.cpu: "8"
+    limits.cpu: "16"
+    requests.memory: "32Gi"
+    limits.memory: "48Gi"
+    # Workloads
+    pods: "20"
+    services: "10"
+    persistentvolumeclaims: "5"
+    # Storage
+    requests.storage: "50Gi"
+    # Secrets and ConfigMaps
+    secrets: "20"
+    configmaps: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-a-defaults
+  namespace: team-a
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: "2Gi"
+      defaultRequest:
+        cpu: "250m"
+        memory: "512Mi"
+      max:
+        cpu: "8"
+        memory: "16Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "20Gi"
+---
+# ── Team B (Production) ───────────────────────────────────────────────────────
+# Stricter limits; production workloads must be right-sized.
+# requests == limits recommended (Guaranteed QoS class; no OOM eviction).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-b-quota
+  namespace: team-b
+spec:
+  hard:
+    # Compute
+    requests.cpu: "4"
+    limits.cpu: "8"
+    requests.memory: "16Gi"
+    limits.memory: "24Gi"
+    # Workloads
+    pods: "10"
+    services: "5"
+    persistentvolumeclaims: "3"
+    # Storage
+    requests.storage: "20Gi"
+    # Secrets and ConfigMaps
+    secrets: "10"
+    configmaps: "10"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-b-defaults
+  namespace: team-b
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "1Gi"
+      defaultRequest:
+        cpu: "250m"
+        memory: "512Mi"
+      max:
+        cpu: "4"
+        memory: "8Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "10Gi"
+---
+# ── RBAC: Tenant isolation ────────────────────────────────────────────────────
+# Each team's SA can only manage workloads in its own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-workload-manager
+  namespace: team-a
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-a-workload-binding
+  namespace: team-a
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: team-a
+roleRef:
+  kind: Role
+  name: tenant-workload-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-workload-manager
+  namespace: team-b
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-b-workload-binding
+  namespace: team-b
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: team-b
+roleRef:
+  kind: Role
+  name: tenant-workload-manager
+  apiGroup: rbac.authorization.k8s.io

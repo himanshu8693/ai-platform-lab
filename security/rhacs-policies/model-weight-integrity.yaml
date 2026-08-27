@@ -1,0 +1,177 @@
+---
+# =============================================================================
+# Red Hat Advanced Cluster Security (RHACS / StackRox) — Custom Policy
+#
+# Policy: Model Weight File Integrity
+#
+# This policy is the RHACS translation of the Falco rule
+# "Model Weight File Modified" in security/falco-rules/inference-workload-rules.yaml
+#
+# Translation rationale (IBM internal transfer artefact):
+#   Falco       → RHACS/StackRox Policy CR
+#   ─────────────────────────────────────────────────────
+#   Falco rules are portable to RHACS because both tools implement runtime
+#   threat detection via eBPF-based syscall interception. The difference is
+#   the management surface:
+#     - Falco: Helm chart, custom rules in ConfigMap, Prometheus/Falcosidekick alerts
+#     - RHACS: ACS Central → policy engine → StackRox Sensor (per-cluster)
+#       Policies are version-controlled CRs, enforced via admission webhooks,
+#       and audited via the ACS compliance dashboard.
+#
+#   In an RHOAI/watsonx.ai production cluster, RHACS is the Red Hat-native
+#   runtime security tool. This policy demonstrates direct portability of the
+#   lab's Falco rules to the IBM/Red Hat product stack.
+#
+# MITRE ATT&CK mapping:
+#   T1565.001 — Stored Data Manipulation (model weight poisoning)
+#   T1074.001 — Data Staged: Local System (pre-exfiltration staging in /models/)
+#
+# Enforcement:
+#   INFORM_AND_ENFORCE: generates a violation alert AND kills the offending process
+#   (requires RHACS Sensor v4.3+ in enforce mode).
+#   In audit-only mode during initial rollout: set enforcement to UNSET_ENFORCEMENT.
+#
+# Apply this policy to RHACS Central via the ACS API:
+#   roxctl policy import --central=https://central.acs.svc:443 \
+#     --api-token=$ACS_API_TOKEN \
+#     security/rhacs-policies/model-weight-integrity.yaml
+# =============================================================================
+
+apiVersion: platform.stackrox.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: model-weight-file-integrity
+  namespace: rhacs-operator
+  labels:
+    platform.ai/managed-by: rhacs
+    platform.ai/policy-type: runtime
+    platform.ai/severity: critical
+  annotations:
+    platform.ai/falco-equivalent: "security/falco-rules/inference-workload-rules.yaml#Model Weight File Modified"
+    platform.ai/mitre: "T1565.001, T1074.001"
+spec:
+  policyName: "Model Weight File Integrity"
+  description: >
+    Detects write operations to model weight directories (/models/, /root/.ollama/models/)
+    by any process other than the authorised inference engine (ollama, python3).
+    Model weights must be immutable at runtime. A write from an unexpected process
+    indicates model poisoning (T1565.001) or a staged exfiltration attempt (T1074.001).
+
+    This policy is the RHACS equivalent of the Falco rule "Model Weight File Modified"
+    and enforces the same threat model across the Red Hat product stack.
+
+  # Severity: CRITICAL — model weight tampering can silently corrupt model output
+  # across ALL tenants using the same model without any serving-layer error.
+  severity: CRITICAL_SEVERITY
+
+  # Enforce at runtime (kill offending process) once policy is validated.
+  # During initial rollout, set to UNSET_ENFORCEMENT for audit-only observation.
+  enforcementActions:
+    - KILL_POD_ENFORCEMENT
+
+  # Lifecycle stage: RUNTIME — this is a runtime detection policy, not an
+  # admission-time policy. It fires when the syscall is observed, not at deploy time.
+  lifecycleStages:
+    - RUNTIME
+
+  # Policy scope: limit to the inference namespace only.
+  # Prevents false positives from image build pipelines in other namespaces
+  # that may legitimately write to /models/ during image construction.
+  scope:
+    - namespace: inference
+
+  # Policy criteria: the combination of conditions that triggers a violation.
+  policySections:
+    - sectionName: "Model weight write from unexpected process"
+      policyGroups:
+
+        # Condition 1: target image is an inference container
+        - fieldName: "Image Remote"
+          booleanOperator: OR
+          values:
+            - value: "ollama/ollama"
+            - value: "vllm/vllm-openai"
+            - value: "nvcr.io/nvidia/tritonserver"
+
+        # Condition 2: a file write to the model weight directory was observed
+        - fieldName: "Writable Mounted Volume"
+          booleanOperator: OR
+          negate: false
+          values:
+            - value: "/models"
+            - value: "/root/.ollama/models"
+
+        # Condition 3: the writing process is NOT the authorised inference engine
+        # RHACS process allowlist: only ollama and python3 may write to model paths.
+        # curl and wget are explicitly excluded from the allowlist (ARB fix).
+        - fieldName: "Process Name"
+          booleanOperator: OR
+          negate: true    # negate: the process is NOT in this list = violation
+          values:
+            - value: "ollama"
+            - value: "python3"
+
+  # Notification: send violation to Slack/PagerDuty via the RHACS notifier
+  # configured in ACS Central. In this lab, violations are logged to stdout
+  # and forwarded to Prometheus alertmanager via the StackRox Prometheus endpoint.
+  notifiers:
+    - rhacs-slack-notifier    # configure in ACS Central → Platform Configuration → Integrations
+
+---
+# =============================================================================
+# RHACS Policy: Disallow wget/curl in Inference Containers
+#
+# Complementary policy: enforce at admission time that inference containers
+# do not include wget or curl in their image (supply chain control).
+# This is an ADMISSION-time check (builds on the runtime check above).
+#
+# If wget/curl are absent from the image, the runtime Falco/RHACS rule above
+# can never be triggered — defence in depth.
+#
+# In practice, the official vLLM and Ollama images DO include curl for health
+# checks. This policy demonstrates the layered approach:
+#   Layer 1 (admission): warn if curl/wget present (INFORM only — not enforced
+#             because these images are vendor-controlled)
+#   Layer 2 (runtime): kill any process that uses curl/wget to write model files
+# =============================================================================
+apiVersion: platform.stackrox.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: disallow-wget-curl-in-inference
+  namespace: rhacs-operator
+  labels:
+    platform.ai/managed-by: rhacs
+    platform.ai/policy-type: image
+    platform.ai/severity: high
+spec:
+  policyName: "Disallow wget/curl Package in Inference Images"
+  description: >
+    Warns when an inference container image contains wget or curl.
+    These utilities are the primary vector for model weight replacement attacks.
+    Where possible, custom inference images should be built without these tools.
+    Vendor images (ollama, vllm) that include them are mitigated by the runtime
+    policy "Model Weight File Integrity" above.
+
+  severity: HIGH_SEVERITY
+
+  # INFORM only — vendor images cannot be modified. This policy generates a
+  # compliance finding for tracking but does not block deployment.
+  enforcementActions: []   # UNSET_ENFORCEMENT = inform only
+
+  lifecycleStages:
+    - BUILD
+    - DEPLOY
+
+  scope:
+    - namespace: inference
+    - namespace: team-a
+    - namespace: team-b
+
+  policySections:
+    - sectionName: "wget or curl present in image components"
+      policyGroups:
+        - fieldName: "Image Component"
+          booleanOperator: OR
+          values:
+            - value: "wget="     # any version of wget
+            - value: "curl="     # any version of curl

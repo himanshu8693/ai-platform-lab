@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# topologies/consul-admin-partition/topology.yaml
+# Ephemeral Topology: Consul Admin Partition Split
+#
+# PURPOSE: Reproduce Sev-1 scenarios involving Consul Admin Partition (AP)
+# networking failures, cross-partition token invalidation, and mesh
+# intention mismatches — the most common Consul enterprise support escalations.
+#
+# HOW TO LAUNCH:
+#   git push this directory → ArgoCD Git generator deploys automatically.
+#   Or: cp -r topologies/consul-admin-partition topologies/consul-ap-<incident-id>
+#       git push  → ArgoCD stamps out an isolated copy.
+#
+# HOW TO INJECT A FAULT:
+#   bash scripts/scenario-inject.sh consul-admin-partition ap-network-split
+#   bash scripts/scenario-inject.sh consul-admin-partition ap-token-revoke
+#
+# HOW TO TEAR DOWN:
+#   git rm -r topologies/consul-admin-partition && git push
+#   ArgoCD prune=true deletes all resources automatically.
+#   Or: bash scripts/ttl-teardown.sh 7200  (auto teardown after 2 hours)
+#
+# TOPOLOGY LAYOUT:
+#   Namespace: topology-consul-admin-partition
+#   │
+#   ├── consul-server (1 replica, dev mode)
+#   │     Admin partitions: "default" + "partition-a" + "partition-b"
+#   ├── service-a (in partition-a)  ← client workload
+#   ├── service-b (in partition-b)  ← target workload
+#   └── mcp-boundary-audit          ← read-only Boundary session MCP tool
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: topology-consul-admin-partition
+  namespace: argocd
+  labels:
+    platform.ai/component:    "ephemeral-topology"
+    platform.ai/topology:     "consul-admin-partition"
+    platform.ai/managed-by:   "argocd"
+  annotations:
+    # TTL annotation — read by scripts/ttl-teardown.sh scheduled teardown.
+    ephemeral-lab/ttl-seconds: "7200"
+    # Link to the scenario inventory for this topology.
+    ephemeral-lab/scenarios: "ap-network-split,ap-token-revoke"
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/himanshusharma/ai-platform-lab
+    targetRevision: HEAD
+    path: topologies/consul-admin-partition
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: topology-consul-admin-partition
+  syncPolicy:
+    automated:
+      # prune: true is the teardown mechanism.
+      # Delete the directory from Git → ArgoCD removes all resources → namespace deleted.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

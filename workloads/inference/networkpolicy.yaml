@@ -1,0 +1,417 @@
+# =============================================================================
+# Zero-Trust NetworkPolicy Suite — inference namespace
+# =============================================================================
+#
+# Security posture: default-deny-all ingress + egress for every pod in the
+# `inference` namespace. Explicit allow-list rules only. Six policies total.
+#
+# Policy inventory:
+#   1. default-deny-all               — blocks ALL traffic (base control)
+#   2. allow-egress-dns               — DNS resolution via kube-dns (UDP+TCP 53)
+#   3. allow-ingress-ollama-from-proxy — model server ingress from proxy only
+#   4. allow-egress-proxy-to-ollama    — proxy egress to model server
+#   5. allow-egress-vault-agent        — Vault Agent sidecar → vault namespace
+#   6. allow-ingress-from-ingress-nginx — external traffic → inference-proxy
+#   7. allow-ingress-prometheus-scrape  — monitoring namespace → metrics ports
+#
+# Namespace label pre-requisite (apply once per cluster):
+#   kubectl label namespace kube-system  kubernetes.io/metadata.name=kube-system
+#   kubectl label namespace vault        kubernetes.io/metadata.name=vault
+#   kubectl label namespace inference    kubernetes.io/metadata.name=inference
+#   kubectl label namespace ingress-nginx kubernetes.io/metadata.name=ingress-nginx
+#   kubectl label namespace monitoring   kubernetes.io/metadata.name=monitoring
+#
+# Pod label requirements:
+#   inference-proxy pods              : app=inference-proxy
+#   ollama-server pods                : app=ollama-server
+#   Pods with Vault Agent sidecar     : vault-agent=true
+#   Pods exposing Prometheus metrics  : platform.ai/scrape=true
+#
+# CKS exam relevance: NetworkPolicy is CKS Domain 4 (Minimize Microservice
+# Vulnerabilities). A default-deny suite with explicit allow rules is the
+# canonical answer for "harden a namespace" questions. Ability to describe
+# WHY both ingress-on-server and egress-on-client are required is tested.
+#
+# CNI compatibility: Cilium, Calico, Antrea. Not supported by Flannel alone.
+# Kind default CNI (kindnetd) does NOT enforce NetworkPolicy — install Calico
+# or Cilium in Kind for enforcement:
+#   kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Policy 1 of 7 — Default deny ALL ingress + egress
+# -----------------------------------------------------------------------------
+# CKS: The foundational control. podSelector: {} matches every pod in the
+# namespace. No ingress/egress rules = no traffic permitted. Every subsequent
+# policy is an additive exception. CNI processes all matching policies; the
+# effective rule set is the UNION of all matching policy rules.
+# Without this policy, traffic that matches NO other policy is ALLOWED by
+# default (Kubernetes default-allow semantics for unselected pods).
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    policy.security/cks-control: "NetworkPolicy default-deny"
+    policy.security/threat-model: >
+      Without default-deny, a compromised pod can exfiltrate model weights,
+      HuggingFace tokens (via Vault), or pivot to cluster-internal services
+      (etcd, Kubernetes API, cloud metadata endpoint). This policy is the
+      minimum viable zero-trust control.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  podSelector: {}        # Matches ALL pods in the inference namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  # Intentionally empty — no rules means deny everything.
+
+---
+# -----------------------------------------------------------------------------
+# Policy 2 of 7 — Allow egress to kube-dns (port 53 UDP + TCP)
+# -----------------------------------------------------------------------------
+# CKS: DNS must be explicitly re-opened after default-deny or all service
+# name resolution fails. Scoped to kube-system namespace AND kube-dns pod
+# label — not a broad "allow any egress on port 53" rule. The dual namespace+
+# pod selector is an AND condition, preventing DNS exfiltration via rogue
+# pods labelled k8s-app=kube-dns in other namespaces.
+# TCP port 53 fallback: responses > 512 bytes (e.g., DNSSEC, large SRV
+# records) automatically fall back from UDP to TCP.
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "DNS egress allowlist"
+    policy.security/why-both-protocols: >
+      UDP for standard queries (<512 bytes). TCP fallback for large responses
+      including DNSSEC RRSIG chains and multi-A-record responses from service
+      mesh control planes (Consul/Istio). Omitting TCP silently breaks ~5% of
+      DNS queries in production.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  podSelector: {}        # All pods require DNS
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# -----------------------------------------------------------------------------
+# Policy 3 of 7 — Allow ingress to ollama-server FROM inference-proxy only
+# -----------------------------------------------------------------------------
+# CKS: Ingress rule on the receiving pod. Restricts who can INITIATE a
+# connection to the model server. Only pods labelled app=inference-proxy in
+# the SAME namespace are permitted. Cross-namespace traffic (e.g., a pod in
+# the default namespace accidentally routed to ollama) is blocked by the
+# absence of a namespaceSelector.
+#
+# Port 11434: Ollama native API + OpenAI-compatible /v1 endpoint.
+# Port 8080:  Optional — metrics/health probe endpoint on the serving runtime.
+#             Uncomment when vLLM/Triton replaces Ollama (their Prometheus
+#             endpoint is :8080/metrics by default in vLLM).
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-model-server-from-proxy
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "Model server ingress allowlist"
+    policy.security/blast-radius: >
+      Limits blast radius of a compromised model-server container: even if
+      exploited, the attacker cannot receive inbound connections from any pod
+      other than inference-proxy, blocking C2 beacon establishment over the
+      inference channel.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      app: ollama-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: inference-proxy
+      ports:
+        - protocol: TCP
+          port: 11434     # Ollama API / OpenAI-compatible /v1 shim
+        # - protocol: TCP
+        #   port: 8080    # Uncomment for vLLM/Triton Prometheus metrics
+
+---
+# -----------------------------------------------------------------------------
+# Policy 4 of 7 — Allow egress FROM inference-proxy TO ollama-server
+# -----------------------------------------------------------------------------
+# CKS: Egress rule on the initiating pod. NetworkPolicy is connection-
+# INITIATING scoped — both sides require explicit rules. A gap where only the
+# server-side ingress rule exists would still be blocked by the client-side
+# default-deny egress on inference-proxy.
+#
+# Common CKS exam trap: candidates write only the ingress rule on the server
+# or only the egress rule on the client. Both are required.
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-proxy-to-model-server
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "Proxy egress to model server"
+    policy.security/paired-with: "allow-ingress-model-server-from-proxy"
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      app: inference-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ollama-server
+      ports:
+        - protocol: TCP
+          port: 11434
+        # - protocol: TCP
+        #   port: 8080    # Uncomment for vLLM/Triton when migrating from Ollama
+
+---
+# -----------------------------------------------------------------------------
+# Policy 5 of 7 — Allow egress FROM vault-agent sidecar TO vault namespace
+# -----------------------------------------------------------------------------
+# CKS: Vault Agent Injector injects a sidecar into every pod annotated with
+# vault.hashicorp.com/agent-inject=true. The sidecar must reach Vault on 8200
+# to authenticate (K8s Service Account auth method) and retrieve secrets.
+#
+# Critical security design: ONLY pods labelled vault-agent=true can reach
+# Vault. The model-server container in the same pod is NOT labelled, so even
+# if the model server is compromised, it cannot query Vault directly. Secrets
+# are written to a shared tmpfs volume by the Vault Agent sidecar — the model
+# server reads them from /vault/secrets/ as rendered template files.
+#
+# Port 8200: Vault API + cluster communication (Raft integrated storage).
+# Port 8201: Vault cluster port for HA replication — needed if Vault is in HA
+#            Raft mode (recommended for production, not needed for dev-mode).
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-vault-agent-to-vault
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "Vault agent egress allowlist"
+    policy.security/zero-trust-note: >
+      The model-server container cannot reach Vault directly. Only the
+      vault-agent sidecar (labelled vault-agent=true) holds the K8s SA token
+      and renders secrets to a shared in-memory volume. This enforces the
+      principle of least privilege at the network layer.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      vault-agent: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+        # No podSelector — allows reaching any Vault pod (active + standby in HA).
+      ports:
+        - protocol: TCP
+          port: 8200       # Vault API
+        - protocol: TCP
+          port: 8201       # Vault cluster port (HA Raft — safe to include even in dev mode)
+
+---
+# -----------------------------------------------------------------------------
+# Policy 6 of 7 — Allow ingress to inference-proxy FROM ingress-nginx
+# -----------------------------------------------------------------------------
+# CKS: External traffic flows through the ingress controller in the
+# ingress-nginx namespace. Without this rule, the ingress controller cannot
+# forward HTTP(S) requests to the inference-proxy Service, silently dropping
+# all external API calls. This is a common misconfiguration in hardened
+# clusters — forgetting to open the ingress-controller → backend pod path.
+#
+# The namespaceSelector restricts to the ingress-nginx namespace only.
+# The podSelector further restricts to pods labelled app.kubernetes.io/name=
+# ingress-nginx — the ingress-nginx controller's own label — preventing a
+# compromised pod in ingress-nginx from using this rule to reach the proxy.
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-nginx-controller
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "Ingress controller → backend allowlist"
+    policy.security/traffic-path: >
+      External client → ingress-nginx NodePort (80/443) → ingress-nginx
+      controller pod → inference-proxy Service (ClusterIP) → this policy
+      permits the final hop.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      app: inference-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080       # inference-proxy application port (HTTP)
+        - protocol: TCP
+          port: 8443       # inference-proxy TLS termination (if applicable)
+
+---
+# -----------------------------------------------------------------------------
+# Policy 7 of 7 — Allow ingress FROM monitoring namespace (Prometheus scrape)
+# -----------------------------------------------------------------------------
+# CKS: The Prometheus server in the monitoring namespace must scrape metrics
+# from pods in inference. Without this rule, Prometheus scrape jobs silently
+# time out, producing "no data" alerts rather than errors — a common
+# misconfiguration that looks like missing instrumentation.
+#
+# Scoped with both namespaceSelector (monitoring namespace) AND podSelector
+# (prometheus pods only). Any pod in monitoring NOT labelled
+# app.kubernetes.io/name=prometheus cannot use this rule as a lateral-movement
+# vector into the inference namespace.
+#
+# Ports:
+#   9400 — mock-dcgm-exporter (DCGM GPU metrics)
+#   8080 — vLLM/Ollama Prometheus endpoint (golden signals: TTFT, KV-cache)
+#   2112 — controller operator metrics (controller-runtime default)
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-prometheus-scrape
+  namespace: inference
+  labels:
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: inference-platform
+  annotations:
+    policy.security/cks-control: "Observability scrape allowlist"
+    policy.security/scraped-ports: "9400 (dcgm), 8080 (serving runtime), 2112 (operator)"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      platform.ai/scrape: "true"   # Applied to any pod exposing Prometheus metrics
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9400       # mock-dcgm-exporter / DCGM GPU metrics
+        - protocol: TCP
+          port: 8080       # vLLM / Ollama Prometheus endpoint
+        - protocol: TCP
+          port: 2112       # controller-runtime default metrics port
+
+---
+# =============================================================================
+# Verification runbook (run after applying all policies)
+# =============================================================================
+#
+# Step 0 — Prerequisites
+#   kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+#   # Verify CNI is enforcing:
+#   kubectl get pods -n kube-system -l k8s-app=calico-node
+#
+# Step 1 — Confirm all 7 policies are applied:
+#   kubectl get networkpolicy -n inference -o wide
+#
+# Step 2 — Test default-deny (expect: connection refused or timeout):
+#   kubectl run test-deny -n inference --rm -it \
+#     --image=curlimages/curl:8.5.0 --restart=Never \
+#     -- curl -s --max-time 3 http://ollama-server:11434/api/version
+#   # Expected: curl: (28) Connection timed out or (7) Connection refused
+#
+# Step 3 — Test DNS allow (expect: successful resolution):
+#   kubectl exec -n inference deploy/inference-proxy \
+#     -- nslookup kubernetes.default.svc.cluster.local
+#
+# Step 4 — Test proxy→ollama allow (expect: 200 OK from Ollama):
+#   kubectl exec -n inference deploy/inference-proxy \
+#     -- curl -s http://ollama-server:11434/api/version
+#
+# Step 5 — Test direct pod→ollama block (expect: connection refused):
+#   # Run from a pod that is NOT inference-proxy:
+#   kubectl run block-test -n inference --rm -it \
+#     --image=curlimages/curl:8.5.0 --restart=Never \
+#     --labels="app=other-app" \
+#     -- curl -s --max-time 3 http://ollama-server:11434/api/version
+#
+# Step 6 — Test Vault Agent egress (from a pod with vault-agent=true):
+#   kubectl exec -n inference -c vault-agent deploy/inference-proxy \
+#     -- vault status -address=http://vault.vault.svc.cluster.local:8200
+#
+# Step 7 — Test cross-namespace block (expect: timeout):
+#   kubectl exec -n inference deploy/inference-proxy \
+#     -- curl -s --max-time 3 http://grafana.monitoring.svc.cluster.local:3000
+#
+# Step 8 — Test Prometheus scrape path (from monitoring namespace):
+#   kubectl run prom-test -n monitoring --rm -it \
+#     --image=curlimages/curl:8.5.0 --restart=Never \
+#     --labels="app.kubernetes.io/name=prometheus" \
+#     -- curl -s http://mock-dcgm-exporter.inference.svc.cluster.local:9400/metrics \
+#     | head -5
+#
+# Step 9 — Audit effective policies on a specific pod:
+#   kubectl get networkpolicy -n inference -o json \
+#     | jq '.items[] | {name: .metadata.name, podSelector: .spec.podSelector}'
+# =============================================================================

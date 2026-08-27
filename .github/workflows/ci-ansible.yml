@@ -1,0 +1,32 @@
+# .github/workflows/ci-ansible.yml
+# G6 — Ansible lint CI gate: runs ansible-lint on all playbooks on every PR
+name: Ansible Lint
+
+on:
+  pull_request:
+    paths:
+      - "playbooks/**"
+      - "inventories/**"
+      - "templates/**"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ansible-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-lint
+        run: pip install ansible-lint
+
+      - name: Run ansible-lint
+        run: ansible-lint playbooks/ --profile production
+        # --profile production: strictest ruleset — matches IBM enterprise standards

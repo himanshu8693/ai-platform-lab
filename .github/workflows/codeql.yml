@@ -1,0 +1,42 @@
+# .github/workflows/codeql.yml
+# G5 — GitHub Advanced Security: CodeQL SAST on Python (and Go once operator is substantial)
+# Uploads SARIF results to the GitHub Security tab.
+name: CodeQL SAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * 1"   # Monday 02:00 UTC — weekly full scan
+
+permissions:
+  security-events: write   # required to upload SARIF
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL — ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python]   # add 'go' when platform/controller/ is substantial
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # SHA-pinned
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality   # includes OWASP Top 10 query suite
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

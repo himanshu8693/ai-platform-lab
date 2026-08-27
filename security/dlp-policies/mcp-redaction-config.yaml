@@ -1,0 +1,131 @@
+---
+# =============================================================================
+# security/dlp-policies/mcp-redaction-config.yaml
+# Presidio Anonymizer Configuration — MCP Server DLP Policy
+#
+# Gap D fix: defines which PII entity types are detected and redacted from
+# MCP server responses before they reach the LLM context window.
+#
+# Entity types follow the Presidio recognizer framework:
+#   https://microsoft.github.io/presidio/supported_entities/
+#
+# Policy governance:
+#   - Adding a new entity type: PR → security-team review → ArgoCD sync
+#   - Removing an entity type: requires documented risk acceptance in ADR-012
+#   - Environment overrides: staging can suppress PHONE_NUMBER to allow test data
+#
+# References: ADR-012, workloads/ai-assistant/mcp-server-dlp-sidecar.yaml
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-redaction-config
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: presidio-anonymizer
+    app.kubernetes.io/component: dlp-policy
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "D"
+    platform.ai/adr: "ADR-012"
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    platform.ai/policy-owner: "platform-security"
+    platform.ai/last-reviewed: "2025-01-01"
+    platform.ai/review-required-for-changes: "true"
+data:
+  # ── Anonymizer configuration ──────────────────────────────────────────────
+  # Each entity_type maps to an anonymizer action and placeholder format.
+  # The format uses typed placeholders so the LLM understands what was redacted:
+  #   <SSN_REDACTED> rather than <REDACTED> — the LLM can explain to the user
+  #   that the value was present but scrubbed for compliance reasons.
+  anonymizer_config.json: |
+    {
+      "anonymizers": {
+        "DEFAULT": {
+          "type": "replace",
+          "new_value": "<REDACTED>"
+        },
+        "US_SSN": {
+          "type": "replace",
+          "new_value": "<SSN_REDACTED>"
+        },
+        "CREDIT_CARD": {
+          "type": "replace",
+          "new_value": "<CREDIT_CARD_REDACTED>"
+        },
+        "EMAIL_ADDRESS": {
+          "type": "replace",
+          "new_value": "<EMAIL_REDACTED>"
+        },
+        "PHONE_NUMBER": {
+          "type": "replace",
+          "new_value": "<PHONE_REDACTED>"
+        },
+        "IP_ADDRESS": {
+          "type": "replace",
+          "new_value": "<IP_REDACTED>"
+        },
+        "IBAN_CODE": {
+          "type": "replace",
+          "new_value": "<IBAN_REDACTED>"
+        },
+        "PERSON": {
+          "type": "replace",
+          "new_value": "<NAME_REDACTED>"
+        },
+        "LOCATION": {
+          "type": "replace",
+          "new_value": "<LOCATION_REDACTED>"
+        },
+        "DATE_TIME": {
+          "type": "keep"
+        },
+        "URL": {
+          "type": "keep"
+        }
+      },
+      "recognizers": {
+        "context_aware": true,
+        "nlp_engine": "spacy",
+        "nlp_model_name": "en_core_web_sm",
+        "score_threshold": 0.75
+      },
+      "fields_to_skip": [
+        "timestamp",
+        "metric_name",
+        "pod_name",
+        "namespace",
+        "container_name",
+        "node_name",
+        "cluster_name",
+        "job",
+        "instance"
+      ],
+      "max_response_size_bytes": 524288
+    }
+
+  # ── Per-environment overrides ─────────────────────────────────────────────
+  # Staging environments may relax some rules to allow test data to flow through.
+  # Production MUST use the base anonymizer_config.json without overrides.
+  environment_overrides.json: |
+    {
+      "staging": {
+        "disable_entities": ["PHONE_NUMBER", "LOCATION"],
+        "score_threshold_override": 0.85
+      },
+      "production": {}
+    }
+
+  # ── Metrics labels for Grafana dashboard (Gap D visualization) ───────────
+  # These labels are emitted by the dlp-metrics-exporter sidecar when redactions
+  # are counted. The Grafana dashboard filters by these label values.
+  metrics_entity_types.txt: |
+    US_SSN
+    CREDIT_CARD
+    EMAIL_ADDRESS
+    PHONE_NUMBER
+    IP_ADDRESS
+    IBAN_CODE
+    PERSON
+    LOCATION

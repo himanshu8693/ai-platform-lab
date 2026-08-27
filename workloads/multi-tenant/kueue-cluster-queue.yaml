@@ -1,0 +1,329 @@
+---
+# =============================================================================
+# Kueue — Job Scheduling & Accelerated Resource Management
+#
+# kubernetes-sigs/kueue v0.9+
+#
+# ARB patch: split single shared ClusterQueue into per-team ClusterQueues
+# with guaranteed floor quotas. Previously team-a could consume the entire
+# enterprise-gpu-pool and starve team-b completely. This topology enforces:
+#
+#   team-a (research)  — 8 CPU / 32Gi guaranteed floor, borrows up to 6 CPU
+#   team-b (prod)      — 8 CPU / 32Gi guaranteed floor, borrows up to 6 CPU
+#   cohort "shared-compute" — borrowing allowed between peers up to lendingLimit
+#
+# Starvation protection: each team's nominalQuota is their unconditional
+# floor. Even if the other team is consuming its borrowingLimit, the
+# scheduler always reserves nominalQuota capacity for its owner.
+#
+# Why Kueue vs plain ResourceQuota:
+#   ResourceQuota enforces hard namespace-level caps but has no concept of
+#   job priority, borrowing, or fair-share scheduling across tenants.
+#   Kueue adds:
+#     • Borrowing: team-a can temporarily consume unused capacity from team-b
+#     • Cohorts: namespaces that share a common pool of borrowable resources
+#     • Priority classes: batch-low jobs preempted in favour of batch-high
+#     • LocalQueue per namespace: developers submit to a local queue without
+#       needing cluster-level visibility
+#
+# Resource model used here:
+#   Simulated GPU via cpu/memory quotas on Apple Silicon M4 Max.
+#   On a real NVIDIA cluster, replace cpu/memory flavors with:
+#     resources: [{name: "nvidia.com/gpu", nominalQuota: "8"}]
+#   See ADR-003 for full simulation strategy.
+#
+# Install Kueue before applying:
+#   kubectl apply --server-side -f \
+#     https://github.com/kubernetes-sigs/kueue/releases/download/v0.9.0/manifests.yaml
+#
+# Verify CRDs are ready:
+#   kubectl get crd clusterqueues.kueue.x-k8s.io
+# =============================================================================
+
+# ── ResourceFlavor: simulated-gpu-m4 ─────────────────────────────────────────
+# A ResourceFlavor represents a class of hardware.
+# On Apple Silicon there is no node-affinity difference between workers,
+# so this flavor carries no nodeAffinity — it binds to any worker node.
+# On real GPU clusters, add tolerations and nodeAffinity to pin
+# workloads to labelled GPU nodes (e.g. nvidia.com/gpu.product: A100).
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: simulated-gpu-m4
+  labels:
+    platform.ai/accelerator: "mps-simulated"
+    platform.ai/lab-mode: "true"
+spec:
+  # No nodeLabels needed for local KinD lab.
+  # Production equivalent:
+  #   nodeLabels:
+  #     cloud.google.com/gke-accelerator: nvidia-a100
+  #   tolerations:
+  #     - key: nvidia.com/gpu
+  #       operator: Exists
+  #       effect: NoSchedule
+  tolerations: []
+
+---
+# ── ClusterQueue: team-a-research ────────────────────────────────────────────
+# Research tier — owns 8 CPU / 32Gi as its guaranteed floor (nominalQuota).
+# Can borrow up to 6 additional CPUs from team-b's unused lending capacity.
+#
+# Floor guarantee: even when team-b is borrowing at full capacity,
+# team-a is always entitled to its nominalQuota of 8 CPU / 32Gi.
+#
+# Preemption:
+#   reclaimWithinCohort: LowerPriority — team-a can preempt team-b's
+#     batch-low borrowed jobs to reclaim its own nominal quota.
+#   borrowWithinCohort: LowerPriority — team-a can only borrow capacity
+#     from team-b if team-b's current workloads are lower-priority.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: team-a-research
+  labels:
+    platform.ai/managed-by: kueue
+    platform.ai/tenant: team-a
+    platform.ai/tier: research
+spec:
+  namespaceSelector:
+    matchLabels:
+      platform.ai/tenant: team-a
+
+  # Both team ClusterQueues join the same cohort.
+  # Unused lending capacity flows between cohort members.
+  cohort: shared-compute
+
+  preemption:
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort: LowerPriority
+    withinClusterQueue: LowerPriority
+
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: simulated-gpu-m4
+          resources:
+            # 8 CPU guaranteed floor for team-a.
+            # Can borrow up to 6 additional CPUs from cohort (team-b lending).
+            # lendingLimit: 6 — team-a lends at most 6 CPUs to cohort peers.
+            - name: cpu
+              nominalQuota: "8"
+              borrowingLimit: "6"
+              lendingLimit: "6"
+            # 32Gi RAM guaranteed floor for team-a.
+            - name: memory
+              nominalQuota: "32Gi"
+              borrowingLimit: "16Gi"
+              lendingLimit: "16Gi"
+
+---
+# ── ClusterQueue: team-b-production ──────────────────────────────────────────
+# Production tier — owns 8 CPU / 32Gi as its guaranteed floor (nominalQuota).
+# Symmetric to team-a-research so neither team can starve the other.
+#
+# Floor guarantee: even when team-a is running high-priority research jobs
+# and borrowing at full capacity, team-b production inference always gets
+# at least 8 CPU / 32Gi — enough for its baseline replica set.
+#
+# Preemption:
+#   reclaimWithinCohort: LowerPriority — team-b can preempt only batch-low
+#     borrowed jobs from team-a to reclaim its own nominal quota.
+#   withinClusterQueue: LowerPriority — lower-priority team-b jobs
+#     are preempted first when the team-b CQ is fully saturated.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: team-b-production
+  labels:
+    platform.ai/managed-by: kueue
+    platform.ai/tenant: team-b
+    platform.ai/tier: production
+spec:
+  namespaceSelector:
+    matchLabels:
+      platform.ai/tenant: team-b
+
+  cohort: shared-compute
+
+  preemption:
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort: LowerPriority
+    withinClusterQueue: LowerPriority
+
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: simulated-gpu-m4
+          resources:
+            - name: cpu
+              nominalQuota: "8"
+              borrowingLimit: "6"
+              lendingLimit: "6"
+            - name: memory
+              nominalQuota: "32Gi"
+              borrowingLimit: "16Gi"
+              lendingLimit: "16Gi"
+
+---
+# ── ClusterQueue: inference-platform ─────────────────────────────────────────
+# Platform-operator tier — dedicated queue for live inference serving Deployments
+# (managed by the ModelDeployment operator, not batch Jobs).
+# Inference serving is NOT preemptible — this queue is outside the shared-compute
+# cohort so research/production batch jobs cannot borrow its capacity.
+#
+# Design rationale:
+#   Live inference replicas have strict latency SLOs (TTFT p99 < 500ms).
+#   Placing them in a separate non-cohort ClusterQueue ensures the HPA/KEDA
+#   auto-scaler can always admit new pods without competing with batch jobs.
+#   Batch teams (team-a, team-b) see their own floors and cannot squeeze
+#   the inference serving tier.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: inference-platform
+  labels:
+    platform.ai/managed-by: kueue
+    platform.ai/tenant: platform
+    platform.ai/tier: inference-serving
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: inference
+
+  # No cohort — inference-platform does not participate in borrowing.
+  # Its capacity is strictly reserved for live inference serving.
+
+  preemption:
+    # Inference serving pods are never preempted.
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: simulated-gpu-m4
+          resources:
+            # 8 CPUs reserved for inference serving pods (2 replicas × 4 CPUs).
+            # Adjust to match your replica set × resource requests.
+            - name: cpu
+              nominalQuota: "8"
+              borrowingLimit: "0"
+              lendingLimit: "0"
+            - name: memory
+              nominalQuota: "32Gi"
+              borrowingLimit: "0Gi"
+              lendingLimit: "0Gi"
+
+---
+# ── LocalQueue: inference (inference namespace) ───────────────────────────────
+# Routes to the dedicated inference-platform ClusterQueue.
+# Inference serving pods annotate their workloads with:
+#   kueue.x-k8s.io/queue-name: inference-queue
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: inference-queue
+  namespace: inference
+  labels:
+    platform.ai/tenant: inference
+  annotations:
+    platform.ai/cluster-queue: inference-platform
+spec:
+  clusterQueue: inference-platform
+
+---
+# ── LocalQueue: team-a ────────────────────────────────────────────────────────
+# Research tier — higher priority class (batch-high) allows team-a jobs
+# to preempt team-b batch-low jobs when borrowing within the cohort.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: team-a-queue
+  namespace: team-a
+  labels:
+    platform.ai/tenant: team-a
+    platform.ai/tier: research
+spec:
+  clusterQueue: team-a-research
+
+---
+# ── LocalQueue: team-b ────────────────────────────────────────────────────────
+# Production tier — uses batch-low priority class.
+# Guaranteed nominalQuota floor; does not aggressively borrow.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: team-b-queue
+  namespace: team-b
+  labels:
+    platform.ai/tenant: team-b
+    platform.ai/tier: production
+spec:
+  clusterQueue: team-b-production
+
+---
+# ── WorkloadPriorityClass: batch-high (research) ─────────────────────────────
+# Assigned to team-a experimental batch jobs.
+# Higher value = higher scheduling priority.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: batch-high
+value: 1000
+description: "Research tier — may preempt batch-low workloads when quota is contended"
+
+---
+# ── WorkloadPriorityClass: batch-low (production steady-state) ───────────────
+# Assigned to team-b steady-state inference batch jobs.
+# These are preemptible by batch-high; they are expected to be long-running
+# and tolerant of re-queuing.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: batch-low
+value: 100
+description: "Production batch tier — preemptible by batch-high during quota contention"
+
+---
+# =============================================================================
+# USAGE EXAMPLE — annotating a batch Job to use Kueue
+#
+# Team-a research job (batch-high priority, borrows if team-b is idle):
+#
+# apiVersion: batch/v1
+# kind: Job
+# metadata:
+#   name: embedding-batch-run
+#   namespace: team-a
+#   labels:
+#     kueue.x-k8s.io/queue-name: team-a-queue
+#   annotations:
+#     kueue.x-k8s.io/priority-class: batch-high
+# spec:
+#   suspend: true      # REQUIRED: Kueue controls when the Job starts
+#   template:
+#     spec:
+#       containers:
+#         - name: embedder
+#           image: ghcr.io/org/embedding-service:latest
+#           resources:
+#             requests:
+#               cpu: "2"
+#               memory: "4Gi"
+#             limits:
+#               cpu: "4"
+#               memory: "8Gi"
+#
+# Verify starvation protection is working:
+#   kubectl get clusterqueue team-a-research -o jsonpath='{.status}'
+#   kubectl get clusterqueue team-b-production -o jsonpath='{.status}'
+#
+# Check a team's current usage vs floor:
+#   kubectl get localqueue -n team-a team-a-queue -o yaml | grep -A10 "status:"
+#   kubectl get localqueue -n team-b team-b-queue -o yaml | grep -A10 "status:"
+#
+# Confirm cohort borrowing is active:
+#   kubectl get clusterqueue team-a-research -o jsonpath=\
+#     '{.status.flavorsUsage[0].resources[*].borrowed}'
+# =============================================================================

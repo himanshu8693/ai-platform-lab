@@ -1,0 +1,402 @@
+---
+# =============================================================================
+# Consul Service Mesh Intentions
+#
+# Controls which services can communicate via Consul Connect.
+# Default deny-all intention is set globally; explicit allow rules below.
+#
+# Intention hierarchy: default-deny < namespace-allow < service-allow
+#
+# Services in scope:
+#   inference/llama3            — model server (vLLM/Ollama)
+#   inference/inference-proxy   — OpenAI-compat proxy
+#   monitoring/prometheus       — metrics scraper
+#   vault/vault                 — secrets backend
+# =============================================================================
+
+# ── Global default: deny all ──────────────────────────────────────────────────
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: deny-all
+  namespace: consul
+spec:
+  destination:
+    name: "*"
+  sources:
+    - name: "*"
+      action: deny
+---
+# ── inference-proxy → llama3 (model server) ──────────────────────────────────
+# The proxy is the only service that may call the model server.
+# HTTP path restriction: /v1/* (OpenAI-compat API only)
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: proxy-to-model-server
+  namespace: inference
+spec:
+  destination:
+    name: llama3
+  sources:
+    - name: inference-proxy
+      namespace: inference
+      action: allow
+      permissions:
+        - http:
+            pathPrefix: "/v1/"
+            methods: ["POST", "GET"]
+---
+# ── ingress-nginx → inference-proxy ──────────────────────────────────────────
+# External traffic enters via ingress-nginx, routed to proxy.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: nginx-to-proxy
+  namespace: inference
+spec:
+  destination:
+    name: inference-proxy
+  sources:
+    - name: ingress-nginx
+      namespace: ingress-nginx
+      action: allow
+---
+# ── prometheus → inference workloads (metrics scrape) ────────────────────────
+# Prometheus scrapes /metrics on model server and proxy.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: prometheus-scrape
+  namespace: inference
+spec:
+  destination:
+    name: llama3
+  sources:
+    - name: prometheus-server
+      namespace: monitoring
+      action: allow
+      permissions:
+        - http:
+            path: "/metrics"
+            methods: ["GET"]
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: prometheus-scrape-proxy
+  namespace: inference
+spec:
+  destination:
+    name: inference-proxy
+  sources:
+    - name: prometheus-server
+      namespace: monitoring
+      action: allow
+      permissions:
+        - http:
+            path: "/metrics"
+            methods: ["GET"]
+---
+# ── inference workloads → vault (secret fetch) ───────────────────────────────
+# Vault Agent init container needs to reach Vault to fetch secrets.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: inference-to-vault
+  namespace: inference
+spec:
+  destination:
+    name: vault
+    namespace: vault
+  sources:
+    - name: llama3
+      namespace: inference
+      action: allow
+    - name: inference-proxy
+      namespace: inference
+      action: allow
+---
+# ── Tenant namespaces → inference-proxy ──────────────────────────────────────
+# team-a and team-b services can call inference proxy (shared inference).
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: team-a-to-proxy
+  namespace: inference
+spec:
+  destination:
+    name: inference-proxy
+  sources:
+    - name: "*"
+      namespace: team-a
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: team-b-to-proxy
+  namespace: inference
+spec:
+  destination:
+    name: inference-proxy
+  sources:
+    - name: "*"
+      namespace: team-b
+      action: allow
+
+---
+# =============================================================================
+# Phase 6 MCP AI Assistant — Consul Service Mesh Intentions
+#
+# These intentions layer on top of the existing deny-all global default.
+# The MCP security model at the service mesh layer:
+#
+#   ALLOW:  ai-assistant → mcp-kubernetes  (MCP tool calls, L7 path restricted)
+#   ALLOW:  ai-assistant → mcp-prometheus  (MCP tool calls, L7 path restricted)
+#   ALLOW:  ai-assistant → ollama-server   (LLM inference, already covered below)
+#   ALLOW:  mcp-prometheus → prometheus    (PromQL queries)
+#   ALLOW:  mcp-kubernetes → vault         (not needed — uses SA token, not Vault)
+#   DENY:   all other traffic to mcp-*     (enforced by global deny-all)
+#
+# Defence-in-depth: NetworkPolicy (L3/L4) AND Consul Intentions (L7) both
+# enforce these rules independently. A misconfigured NetworkPolicy rule would
+# be caught by the Consul intention. A Consul control plane failure would be
+# caught by the NetworkPolicy. Neither single control point is a SPOF.
+# =============================================================================
+
+# ── ADR-006 direct paths REMOVED (superseded by ADR-007 Context Forge gateway)
+#
+# The following intentions are intentionally absent:
+#   ai-assistant-to-mcp-kubernetes  (ADR-006) — removed; ai-assistant now reaches
+#   ai-assistant-to-mcp-prometheus  (ADR-006)   mcp-* only via context-forge
+#   deny-all-to-mcp-kubernetes      (ADR-006) — replaced by deny-direct-to-mcp-*
+#   deny-all-to-mcp-prometheus      (ADR-006)   at the end of this file (ADR-007)
+#
+# See ADR-007 and the Context Forge intentions block below for the current
+# allow/deny policy. The ADR-006 intentions were conflict sources: they granted
+# ai-assistant direct access to mcp-kubernetes and mcp-prometheus, contradicting
+# the ADR-007 gateway-only model enforced by context-forge-networkpolicy.yaml.
+
+---
+# ── mcp-prometheus → prometheus-server ───────────────────────────────────────
+# mcp-prometheus must reach the Prometheus server to execute PromQL queries.
+# Scoped to the /api/v1/ query path only — not the /graph UI or admin endpoints.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: mcp-prometheus-to-prometheus
+  namespace: monitoring
+spec:
+  destination:
+    name: prometheus-server
+    namespace: monitoring
+  sources:
+    - name: mcp-prometheus
+      namespace: inference
+      action: allow
+      permissions:
+        - http:
+            pathPrefix: "/api/v1/"    # PromQL API: /api/v1/query and /api/v1/query_range
+            methods: ["GET", "POST"]
+        - http:
+            path: "/-/healthy"        # Prometheus health endpoint
+            methods: ["GET"]
+
+---
+# ── ai-assistant → ollama-server ─────────────────────────────────────────────
+# ai-assistant calls Ollama for LLM inference via the OpenAI-compat API.
+# Supplements the existing proxy-to-model-server intention — ai-assistant
+# is a second authorised client of the ollama-server.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: ai-assistant-to-ollama
+  namespace: inference
+spec:
+  destination:
+    name: llama3
+  sources:
+    - name: ai-assistant
+      namespace: inference
+      action: allow
+      permissions:
+        - http:
+            pathPrefix: "/v1/"        # OpenAI-compat chat completions
+            methods: ["POST"]
+        - http:
+            pathPrefix: "/api/"       # Ollama native API
+            methods: ["GET", "POST"]
+
+---
+# =============================================================================
+# Phase 6 Context Forge (ADR-007) — Consul Service Mesh Intentions
+#
+# Architecture change from ADR-006 direct paths:
+#
+#   CHANGED:  ai-assistant → context-forge (was ai-assistant → mcp-kubernetes)
+#   CHANGED:  ai-assistant → context-forge (was ai-assistant → mcp-prometheus)
+#   ADDED:    context-forge → mcp-kubernetes  (new gateway-to-backend path)
+#   ADDED:    context-forge → mcp-prometheus  (new gateway-to-backend path)
+#   RETAINED: mcp-prometheus → prometheus-server (unchanged)
+#   RETAINED: ai-assistant → llama3 (Ollama — unchanged)
+#
+# The old intentions ai-assistant-to-mcp-kubernetes and
+# ai-assistant-to-mcp-prometheus remain in the file for reference but
+# the new deny-all-to-mcp-* intentions supersede them. The direct
+# ai-assistant → mcp-* paths are no longer needed and must be blocked.
+# =============================================================================
+
+# ── ai-assistant → context-forge ─────────────────────────────────────────────
+# L7 path restriction: only the MCP gateway endpoint and admin health check.
+# The ai-assistant NEVER calls /admin, /api/gateways, or /api/virtual-servers —
+# those are admin paths restricted to the bootstrap Job and the platform operator.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: ai-assistant-to-context-forge
+  namespace: inference
+spec:
+  destination:
+    name: context-forge
+  sources:
+    - name: ai-assistant
+      namespace: inference
+      action: allow
+      permissions:
+        # Virtual Server SSE endpoint — where the AI assistant connects for tool discovery
+        - http:
+            pathPrefix: "/virtual-servers/"
+            methods: ["GET", "POST"]
+        # MCP root endpoint (for clients connecting to the full gateway, not a VS)
+        - http:
+            pathPrefix: "/mcp"
+            methods: ["POST"]
+        - http:
+            pathPrefix: "/sse"
+            methods: ["GET"]
+        - http:
+            path: "/health"
+            methods: ["GET"]
+
+---
+# ── Deny admin paths to ai-assistant ─────────────────────────────────────────
+# Explicit deny for the admin API and UI. Even though ai-assistant does not have
+# a valid admin JWT, belt-and-suspenders.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: deny-admin-to-ai-assistant
+  namespace: inference
+spec:
+  destination:
+    name: context-forge
+  sources:
+    # Deny non-assistant sources entirely (relies on the global deny-all default)
+    - name: "*"
+      namespace: team-a
+      action: deny
+    - name: "*"
+      namespace: team-b
+      action: deny
+
+---
+# ── context-forge → mcp-kubernetes ───────────────────────────────────────────
+# Context Forge proxies tool calls to the Kubernetes MCP server.
+# Permitted paths: MCP protocol paths only (/mcp, /sse, /healthz).
+# The admin endpoint of mcp-kubernetes (if any) is not reachable.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: context-forge-to-mcp-kubernetes
+  namespace: inference
+spec:
+  destination:
+    name: mcp-kubernetes
+  sources:
+    - name: context-forge
+      namespace: inference
+      action: allow
+      permissions:
+        - http:
+            pathPrefix: "/mcp"
+            methods: ["POST"]
+        - http:
+            pathPrefix: "/sse"
+            methods: ["GET"]
+        - http:
+            path: "/healthz"
+            methods: ["GET"]
+
+---
+# ── context-forge → mcp-prometheus ───────────────────────────────────────────
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: context-forge-to-mcp-prometheus
+  namespace: inference
+spec:
+  destination:
+    name: mcp-prometheus
+  sources:
+    - name: context-forge
+      namespace: inference
+      action: allow
+      permissions:
+        - http:
+            pathPrefix: "/mcp"
+            methods: ["POST"]
+        - http:
+            pathPrefix: "/sse"
+            methods: ["GET"]
+        - http:
+            path: "/healthz"
+            methods: ["GET"]
+
+---
+# ── UPDATE: mcp-kubernetes deny-all now excludes context-forge ────────────────
+# The old deny-all-to-mcp-kubernetes denied all inference namespace sources.
+# With ADR-007, context-forge must be able to reach mcp-kubernetes.
+# This intention replaces deny-all-to-mcp-kubernetes from the ADR-006 block:
+#   - ai-assistant is now blocked from calling mcp-kubernetes directly
+#   - context-forge is allowed (handled above)
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: deny-direct-to-mcp-kubernetes
+  namespace: inference
+spec:
+  destination:
+    name: mcp-kubernetes
+  sources:
+    # Block ai-assistant from calling mcp-kubernetes directly (ADR-007 change)
+    - name: ai-assistant
+      namespace: inference
+      action: deny
+    - name: "*"
+      namespace: team-a
+      action: deny
+    - name: "*"
+      namespace: team-b
+      action: deny
+
+---
+# ── UPDATE: mcp-prometheus deny-all now excludes context-forge ───────────────
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: deny-direct-to-mcp-prometheus
+  namespace: inference
+spec:
+  destination:
+    name: mcp-prometheus
+  sources:
+    - name: ai-assistant
+      namespace: inference
+      action: deny
+    - name: "*"
+      namespace: team-a
+      action: deny
+    - name: "*"
+      namespace: team-b
+      action: deny

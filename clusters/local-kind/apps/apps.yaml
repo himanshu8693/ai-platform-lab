@@ -1,0 +1,515 @@
+---
+# =============================================================================
+# Ollama — inference runtime application
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ollama
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://otwld.github.io/ollama-helm/
+    chart: ollama
+    targetRevision: "0.56.0"
+    helm:
+      releaseName: ollama
+      values: |
+        replicaCount: 1
+        image:
+          tag: "0.5.4"
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "4"
+            memory: "12Gi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        service:
+          type: ClusterIP
+          port: 11434
+        podAnnotations:
+          vault.hashicorp.com/agent-inject: "true"
+          vault.hashicorp.com/agent-inject-secret-hf-token: "secret/data/ai-platform/hf-token"
+          vault.hashicorp.com/role: "inference-role"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: inference
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# =============================================================================
+# Vault — secrets management
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://helm.releases.hashicorp.com
+    chart: vault
+    targetRevision: "0.28.1"
+    helm:
+      releaseName: vault
+      values: |
+        server:
+          dev:
+            enabled: true
+            devRootToken: "root"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            enabled: true
+            path: /v1/sys/health?standbyok=true
+          livenessProbe:
+            enabled: true
+            path: /v1/sys/health?standbyok=true
+        injector:
+          enabled: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# =============================================================================
+# Consul — service mesh (intentions + service discovery)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: consul
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://helm.releases.hashicorp.com
+    chart: consul
+    targetRevision: "1.5.3"
+    helm:
+      releaseName: consul
+      values: |
+        global:
+          name: consul
+          datacenter: dc1
+        server:
+          replicas: 1
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        connectInject:
+          enabled: true
+          default: false
+        controller:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: consul
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# =============================================================================
+# Observability — Prometheus + Grafana stack
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "65.4.0"
+    helm:
+      releaseName: kube-prometheus-stack
+      values: |
+        grafana:
+          adminPassword: "admin"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        prometheus:
+          prometheusSpec:
+            resources:
+              requests:
+                cpu: "200m"
+                memory: "512Mi"
+              limits:
+                cpu: "1"
+                memory: "2Gi"
+            additionalScrapeConfigs:
+              - job_name: mock-dcgm
+                scrape_interval: 15s
+                static_configs:
+                  - targets: ['mock-dcgm-exporter.monitoring.svc.cluster.local:9400']
+                    labels:
+                      cluster: ai-platform-lab
+                      node: mock-gpu-node-0
+        alertmanager:
+          alertmanagerSpec:
+            resources:
+              requests:
+                cpu: "50m"
+                memory: "64Mi"
+              limits:
+                cpu: "200m"
+                memory: "256Mi"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# =============================================================================
+# ArgoCD itself — self-managed
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-cd
+    targetRevision: "7.7.3"
+    helm:
+      releaseName: argocd
+      values: |
+        server:
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+        repoServer:
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+
+---
+# =============================================================================
+# KEDA — Kubernetes Event-Driven Autoscaling operator
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: "2.16.0"
+    helm:
+      releaseName: keda
+      values: |
+        resources:
+          operator:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          metricServer:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# =============================================================================
+# Kueue — Job scheduling and multi-tenant quota management
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kueue
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/kueue
+    chart: kueue
+    targetRevision: "0.9.0"
+    helm:
+      releaseName: kueue
+      values: |
+        enableExternalCertManagement: false
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kueue-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# =============================================================================
+# OpenTelemetry Collector + Grafana Tempo — distributed tracing backend
+# Required for Context Forge OTel traces (ADR-007)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    targetRevision: "0.111.0"
+    helm:
+      releaseName: otel-collector
+      values: |
+        mode: deployment
+        replicaCount: 1
+        config:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: "0.0.0.0:4317"
+                http:
+                  endpoint: "0.0.0.0:4318"
+          processors:
+            batch:
+              timeout: 1s
+          exporters:
+            debug:
+              verbosity: basic
+            # Tempo exporter (uncomment when Tempo is deployed)
+            # otlp/tempo:
+            #   endpoint: "tempo.monitoring.svc.cluster.local:4317"
+            #   tls:
+            #     insecure: true
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [batch]
+                exporters: [debug]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        ports:
+          otlp:
+            enabled: true
+            containerPort: 4317
+            servicePort: 4317
+            protocol: TCP
+          otlp-http:
+            enabled: true
+            containerPort: 4318
+            servicePort: 4318
+            protocol: TCP
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# =============================================================================
+# Topology Launcher — ApplicationSet (Git generator)
+# The core of the Ephemeral Lab Engine.
+# Each subdirectory under topologies/ = one isolated incident topology.
+# Add a directory → ArgoCD deploys it. Remove it → ArgoCD prunes it.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: topology-launcher
+  namespace: argocd
+  labels:
+    platform.ai/component: "ephemeral-lab-engine"
+    platform.ai/managed-by: "argocd"
+  annotations:
+    platform.ai/doc: >
+      Git generator: discovers topology directories automatically.
+      To launch: mkdir topologies/<name> && git push
+      To tear down: git rm -r topologies/<name> && git push
+spec:
+  # Prevent simultaneous sync of more than 2 topologies (resource safety).
+  syncPolicy:
+    preserveResourcesOnDeletion: false
+  generators:
+    - git:
+        repoURL: https://github.com/himanshusharma/ai-platform-lab
+        revision: HEAD
+        directories:
+          - path: topologies/*
+          # Exclude the shared base — it is not a topology itself.
+          - path: topologies/_base
+            exclude: true
+  template:
+    metadata:
+      name: "topology-{{path.basename}}"
+      namespace: argocd
+      labels:
+        platform.ai/component:    "ephemeral-topology"
+        platform.ai/topology:     "{{path.basename}}"
+        platform.ai/managed-by:   "argocd"
+      annotations:
+        # Default TTL: 2 hours. Override in individual topology.yaml.
+        ephemeral-lab/ttl-seconds: "7200"
+        argocd.argoproj.io/sync-wave: "0"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/himanshusharma/ai-platform-lab
+        targetRevision: HEAD
+        path: "topologies/{{path.basename}}"
+        helm:
+          valueFiles:
+            - values.yaml
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "topology-{{path.basename}}"
+      syncPolicy:
+        automated:
+          # prune: true is the teardown mechanism.
+          # Deleting the topology directory from Git causes ArgoCD to delete
+          # all created resources and the namespace — zero manual cleanup.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

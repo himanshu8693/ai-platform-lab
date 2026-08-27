@@ -1,0 +1,119 @@
+---
+# =============================================================================
+# mcp-server-sa.yaml — SPIFFE-Bound MCP Server ServiceAccount
+#
+# Gap B fix: replaces the generic mcp-kubernetes-sa and mcp-prometheus-sa
+# Kubernetes SA token approach with a SPIFFE SVID-backed identity.
+#
+# Key changes vs the original rbac.yaml ServiceAccounts:
+#   1. automountServiceAccountToken: false on the MCP server SA used for Vault auth.
+#      The raw SA token is no longer the Vault auth credential.
+#   2. A dedicated "mcp-server-sa" ServiceAccount is created for Vault/Boundary auth.
+#      The mcp-kubernetes-sa retains its SA token ONLY for K8s API server auth
+#      (RBAC read-only access) — it has no Vault auth role.
+#   3. The SPIRE CSI driver mounts the SVID into the pod at /run/spire/svid.
+#      The MCP server reads this file to authenticate to Vault via JWT/SPIRE auth.
+#
+# Security posture after this change (ADR-009):
+#   - mcp-server-sa → Vault: authenticated via SPIRE SVID (JWT), not raw SA token
+#   - mcp-kubernetes-sa → K8s API: authenticated via SA token (unchanged, read-only RBAC)
+#   - No SA token is usable as a Vault credential anymore (kubernetes auth role removed)
+#
+# References: ADR-009, terraform/spiffe-vault-auth.tf, spire-registration.yaml
+# =============================================================================
+
+# ── ServiceAccount: mcp-server-sa (Vault/Boundary auth identity) ─────────────
+# This SA is ONLY used for SPIFFE workload identity — not for K8s API access.
+# The SPIRE agent attests pods running under this SA and issues SVIDs to them.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: mcp-server
+    app.kubernetes.io/component: mcp-server
+    platform.ai/managed-by: argocd
+    platform.ai/identity-type: spiffe-svid
+  annotations:
+    platform.ai/gap: "B"
+    platform.ai/adr: "ADR-009"
+    platform.ai/security-note: >
+      This SA is the SPIFFE workload identity anchor for MCP server pods.
+      The SPIRE agent will issue an X.509 SVID with URI SAN:
+      spiffe://ai-platform.internal/ns/inference/sa/mcp-server-sa.
+      The raw SA token is NOT used for Vault authentication (kubernetes auth role removed).
+      Vault authentication uses the SVID JWT form via the jwt/spire auth backend.
+# No SA token automount — SPIRE SVID is the auth credential, not the SA token.
+automountServiceAccountToken: false
+
+---
+# ── ClusterRole: mcp-server-vault-auth (read-only, no K8s API access) ─────────
+# The mcp-server-sa does not need any K8s API permissions.
+# This ClusterRole exists only as documentation of the no-permission stance.
+# The K8s API read permissions remain on mcp-kubernetes-sa (unchanged in rbac.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server-sa-no-permissions
+  labels:
+    app.kubernetes.io/name: mcp-server
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "B"
+  annotations:
+    platform.ai/note: >
+      Intentionally empty ClusterRole. mcp-server-sa has zero K8s API permissions.
+      It exists solely as a SPIFFE workload identity anchor. SPIRE registers pods
+      running under this SA and attests their identity to issue SVIDs.
+rules: []   # No permissions — SPIRE attestation only
+
+---
+# ── ClusterRoleBinding: mcp-server-sa → no-permissions ───────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server-sa-binding
+  labels:
+    app.kubernetes.io/name: mcp-server
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "B"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-server-sa-no-permissions
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server-sa
+    namespace: inference
+
+---
+# ── NetworkPolicy: spire-agent → mcp-server pods ─────────────────────────────
+# The SPIRE agent must be able to reach MCP server pods to deliver SVIDs.
+# This is in the OPPOSITE direction of most NetworkPolicies: the agent initiates.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-spire-agent-to-mcp-servers
+  namespace: inference
+  labels:
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "B"
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: mcp-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: spire
+          podSelector:
+            matchLabels:
+              app: spire-agent
+      ports:
+        - protocol: TCP
+          port: 9090   # SPIRE workload API port (unix socket in prod; TCP in KinD)

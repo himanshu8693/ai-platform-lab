@@ -1,0 +1,493 @@
+---
+# =============================================================================
+# MCP Server Deployments + Services
+#
+# Deploys two MCP server containers and the AI assistant MCP client:
+#   mcp-kubernetes   — Kubernetes API read-only bridge (port 8080)
+#   mcp-prometheus   — Prometheus PromQL bridge (port 8081)
+#   ai-assistant     — MCP client + Ollama LLM client (port 8082)
+#
+# Transport: HTTP+SSE (not stdio — incompatible with K8s pod networking)
+# See ADR-006 and Phase 6 curriculum Week 1 for transport selection rationale.
+#
+# ARM64 note:
+#   If upstream MCP server images lack ARM64 support, build a custom wrapper:
+#     FROM python:3.12-slim
+#     RUN pip install mcp kubernetes prometheus-client httpx fastapi uvicorn
+#     COPY mcp_k8s_server.py /app/
+#     CMD ["python", "/app/mcp_k8s_server.py"]
+#   Reference implementations are in scripts/mcp/ (to be added in lab Week 1).
+#
+# Vault secret injection:
+#   All three pods carry vault.hashicorp.com/agent-inject annotations following
+#   the pattern established in ADR-002. Secrets are rendered to /vault/secrets/
+#   as template files, never as environment variables.
+# =============================================================================
+
+# ── Deployment: mcp-kubernetes ────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-kubernetes
+  namespace: inference
+  labels:
+    app: mcp-kubernetes
+    app.kubernetes.io/name: mcp-kubernetes
+    app.kubernetes.io/component: mcp-server
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-kubernetes
+  template:
+    metadata:
+      labels:
+        app: mcp-kubernetes
+        app.kubernetes.io/name: mcp-kubernetes
+        platform.ai/scrape: "true"
+        vault-agent: "true"
+        # Consul sidecar injection — enrolled in the service mesh
+        # consul.hashicorp.com/connect-inject: "true" is set at namespace level
+      annotations:
+        # ── Vault Agent Sidecar ──────────────────────────────────────────────
+        # mcp-kubernetes does not need secrets itself (it uses its SA token for
+        # K8s API auth). Annotation block retained as a template; enable if you
+        # add Prometheus scrape credentials or a model registry token in future.
+        vault.hashicorp.com/agent-inject: "false"
+        vault.hashicorp.com/role: "inference-role"
+
+        # ── Prometheus scrape ────────────────────────────────────────────────
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: mcp-kubernetes-sa    # Bound to mcp-kubernetes-readonly ClusterRole
+      automountServiceAccountToken: true        # Required for in-cluster API server auth
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534       # nobody
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: mcp-kubernetes
+          # Primary: ghcr.io/strowger/kubernetes-mcp-server (multi-arch)
+          # Fallback: ghcr.io/giantswarm/mcp-kubernetes (multi-arch)
+          # If neither has ARM64: build custom from scripts/mcp/kubernetes/Dockerfile
+          image: ghcr.io/strowger/kubernetes-mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mcp-http
+              containerPort: 8080
+              protocol: TCP
+
+          env:
+            # Transport: HTTP+SSE. stdio is not viable in Kubernetes pod networking.
+            - name: MCP_TRANSPORT
+              value: "sse"
+            - name: MCP_PORT
+              value: "8080"
+            # Namespace scope: restrict to inference namespace by default.
+            # Remove or expand to "all" once RBAC is validated in lab.
+            - name: KUBERNETES_NAMESPACE
+              value: "inference"
+            # Read-only mode flag (server-level guard in addition to RBAC).
+            # Prevents any tool registration that would mutate state.
+            # Supported by giantswarm/mcp-kubernetes; check strowger implementation.
+            - name: MCP_READONLY
+              value: "true"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+# ── Service: mcp-kubernetes ───────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-kubernetes
+  namespace: inference
+  labels:
+    app: mcp-kubernetes
+    app.kubernetes.io/name: mcp-kubernetes
+    platform.ai/managed-by: argocd
+spec:
+  selector:
+    app: mcp-kubernetes
+  ports:
+    - name: mcp-http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── Deployment: mcp-prometheus ────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-prometheus
+  namespace: inference
+  labels:
+    app: mcp-prometheus
+    app.kubernetes.io/name: mcp-prometheus
+    app.kubernetes.io/component: mcp-server
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-prometheus
+  template:
+    metadata:
+      labels:
+        app: mcp-prometheus
+        app.kubernetes.io/name: mcp-prometheus
+        platform.ai/scrape: "true"
+        vault-agent: "true"
+      annotations:
+        # ── Vault Agent Sidecar ──────────────────────────────────────────────
+        # Injects Prometheus bearer token if the Prometheus instance has auth
+        # enabled. In the lab, Prometheus has no auth — set agent-inject: false.
+        # In production (RHOAI Prometheus has OAuth), set to true and configure
+        # the secret path accordingly.
+        vault.hashicorp.com/agent-inject: "false"
+        vault.hashicorp.com/role: "inference-role"
+        # When Prometheus auth is enabled, uncomment:
+        # vault.hashicorp.com/agent-inject: "true"
+        # vault.hashicorp.com/agent-inject-secret-prometheus-token: "secret/data/ai-platform/prometheus-token"
+        # vault.hashicorp.com/agent-inject-template-prometheus-token: |
+        #   {{- with secret "secret/data/ai-platform/prometheus-token" -}}
+        #   {{ .Data.data.token }}
+        #   {{- end }}
+
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: mcp-prometheus-sa   # No K8s API permissions
+      automountServiceAccountToken: false
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: mcp-prometheus
+          # Primary: pab1it0/prometheus-mcp-server
+          # If ARM64 support is missing, build from scripts/mcp/prometheus/Dockerfile
+          image: pab1it0/prometheus-mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mcp-http
+              containerPort: 8081
+              protocol: TCP
+
+          env:
+            - name: MCP_TRANSPORT
+              value: "sse"
+            - name: MCP_PORT
+              value: "8081"
+            # Prometheus API endpoint inside the cluster.
+            # Update if Prometheus is not in the monitoring namespace.
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+            # If Prometheus has bearer token auth enabled:
+            # - name: PROMETHEUS_TOKEN_FILE
+            #   value: "/vault/secrets/prometheus-token"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory   # tmpfs — secrets never touch disk
+
+---
+# ── Service: mcp-prometheus ───────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-prometheus
+  namespace: inference
+  labels:
+    app: mcp-prometheus
+    app.kubernetes.io/name: mcp-prometheus
+    platform.ai/managed-by: argocd
+spec:
+  selector:
+    app: mcp-prometheus
+  ports:
+    - name: mcp-http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── Deployment: ai-assistant ──────────────────────────────────────────────────
+# The AI assistant is the MCP client. It:
+#   1. Discovers tools from mcp-kubernetes and mcp-prometheus at startup
+#   2. Receives user queries via its own HTTP API (port 8082)
+#   3. Calls Ollama for LLM inference (OpenAI-compat API on :11434)
+#   4. Dispatches tool calls to the appropriate MCP server
+#   5. Returns synthesised answers
+#
+# Security: this pod has ZERO Kubernetes API permissions. Its ServiceAccount
+# (ai-assistant-sa) has no ClusterRole or Role binding. The pod can only
+# reach: mcp-kubernetes:8080, mcp-prometheus:8081, ollama-server:11434.
+# All other egress is denied by NetworkPolicy default-deny-all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-assistant
+  namespace: inference
+  labels:
+    app: ai-assistant
+    app.kubernetes.io/name: ai-assistant
+    app.kubernetes.io/component: mcp-client
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"   # After MCP servers are ready
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-assistant
+  template:
+    metadata:
+      labels:
+        app: ai-assistant
+        app.kubernetes.io/name: ai-assistant
+        platform.ai/scrape: "true"
+        vault-agent: "true"
+      annotations:
+        # ── Vault Agent Sidecar ──────────────────────────────────────────────
+        # Injects the Ollama API key (if auth is enabled on the serving runtime).
+        # The assistant reads from /vault/secrets/ollama-api-key — not from $env.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "inference-role"
+        vault.hashicorp.com/agent-inject-secret-ollama-api-key: "secret/data/ai-platform/ollama-api-key"
+        vault.hashicorp.com/agent-inject-template-ollama-api-key: |
+          {{- with secret "secret/data/ai-platform/ollama-api-key" -}}
+          {{ .Data.data.key }}
+          {{- end }}
+
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8082"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ai-assistant-sa   # ZERO K8s API permissions
+      automountServiceAccountToken: false    # Belt and suspenders
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: ai-assistant
+          # Build from platform/ai-assistant/ (to be scaffolded in Phase 6 Week 4)
+          # Image implements: FastAPI /query endpoint + MCP client + Ollama client
+          image: ghcr.io/himanshusharma/ai-platform-lab/ai-assistant:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8082
+              protocol: TCP
+
+          env:
+            # ── Context Forge Gateway (ADR-007) ─────────────────────────────
+            # ai-assistant now connects to Context Forge as its single MCP endpoint.
+            # It never speaks directly to mcp-kubernetes or mcp-prometheus.
+            # The Virtual Server URL is injected by Vault (set by bootstrap Job).
+            - name: MCPGATEWAY_BASE_URL
+              value: "http://context-forge.inference.svc.cluster.local:4444"
+            # Bearer token file — Vault Agent injects the Context Forge JWT here.
+            # The token is generated by the bootstrap Job and stored in Vault KV.
+            - name: MCPGATEWAY_BEARER_TOKEN_FILE
+              value: "/vault/secrets/context-forge-token"
+            # Virtual Server endpoint (set by bootstrap Job, stored in Vault KV)
+            # Format: http://context-forge:4444/virtual-servers/<id>/sse
+            - name: MCP_VIRTUAL_SERVER_URL_FILE
+              value: "/vault/secrets/context-forge-vs-endpoint"
+            # ── Ollama inference endpoint (unchanged) ────────────────────────
+            - name: OLLAMA_BASE_URL
+              value: "http://ollama-server.inference.svc.cluster.local:11434"
+            - name: OLLAMA_MODEL
+              value: "llama3.2:3b"
+            - name: OLLAMA_API_KEY_FILE
+              value: "/vault/secrets/ollama-api-key"
+            # ── Platform identity ────────────────────────────────────────────
+            - name: PLATFORM_ENV
+              value: "local-kind-lab"
+            - name: SERVICE_NAME
+              value: "ai-assistant"
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6   # MCP server startup takes a few seconds
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      initContainers:
+        # Wait for Context Forge to be ready (ADR-007: single gateway, not direct MCP servers).
+        # Context Forge's own init container already waits for mcp-kubernetes + mcp-prometheus,
+        # so by the time context-forge is /ready, all backends are confirmed healthy.
+        - name: wait-for-context-forge
+          image: curlimages/curl:8.5.0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Context Forge gateway..."
+              until curl -sf http://context-forge.inference.svc.cluster.local:4444/health; do
+                sleep 3
+              done
+              echo "Context Forge ready. Starting ai-assistant."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir: {}
+
+---
+# ── Service: ai-assistant ─────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-assistant
+  namespace: inference
+  labels:
+    app: ai-assistant
+    app.kubernetes.io/name: ai-assistant
+    platform.ai/managed-by: argocd
+spec:
+  selector:
+    app: ai-assistant
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP
+  type: ClusterIP

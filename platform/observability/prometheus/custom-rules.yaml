@@ -1,0 +1,257 @@
+---
+# =============================================================================
+# Prometheus Custom Alert Rules — AI Platform Lab
+#
+# Applied as a PrometheusRule CRD (kube-prometheus-stack).
+# Covers GPU health, KV-cache saturation, inference SLOs, and security.
+#
+# SLO targets:
+#   TTFT p99  < 1.0s
+#   TPOT p99  < 0.05s (50 ms per output token)
+#   Error rate < 0.1%
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ai-platform-custom-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    app: kube-prometheus-stack
+spec:
+  groups:
+    # ── GPU Health ─────────────────────────────────────────────────────────────
+    - name: gpu.health
+      interval: 30s
+      rules:
+        - alert: HighGPUTemperature
+          expr: DCGM_FI_DEV_GPU_TEMP > 80
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "GPU die temperature above 80°C on {{ $labels.Hostname }}"
+            description: >
+              GPU {{ $labels.gpu }} on {{ $labels.Hostname }} has been above 80°C
+              for 5 minutes (current: {{ $value }}°C). Alert threshold 83°C.
+              Check cooling and power draw.
+
+        - alert: GPUTemperatureCritical
+          expr: DCGM_FI_DEV_GPU_TEMP > 83
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "GPU temperature critical — possible thermal throttle on {{ $labels.Hostname }}"
+            description: >
+              GPU {{ $labels.gpu }} is at {{ $value }}°C. NVIDIA H100 throttles at 83°C.
+              Expect SM clock reduction and inference degradation immediately.
+
+        - alert: HBMTemperatureCritical
+          expr: DCGM_FI_DEV_MEMORY_TEMP > 90
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "HBM temperature near limit (95°C critical)"
+            description: "HBM on GPU {{ $labels.gpu }} is at {{ $value }}°C. Critical limit is 95°C."
+
+        - alert: GPUXIDError
+          expr: DCGM_FI_DEV_XID_ERRORS > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "XID error on GPU {{ $labels.gpu }} — node should be cordoned"
+            description: >
+              XID error detected on {{ $labels.Hostname }} GPU {{ $labels.gpu }}.
+              XID 48 = DBE (double-bit ECC error). Run: kubectl cordon <node>
+              Runbook: RB-001-ollama-oom-recovery.md
+
+        - alert: GPUECCDoubleBitError
+          expr: DCGM_FI_DEV_ECC_DBE_VOL_TOTAL > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Double-bit ECC error — DRAM fault on {{ $labels.Hostname }}"
+            description: >
+              DBE (uncorrectable ECC) on GPU {{ $labels.gpu }}. This indicates DRAM failure.
+              Cordon node immediately; replace GPU in next maintenance window.
+
+        - alert: GPUHighUtilization
+          expr: DCGM_FI_DEV_GPU_UTIL > 95
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "GPU sustained >95% utilization — saturated"
+            description: >
+              GPU {{ $labels.gpu }} at {{ $value }}% for 10m. Consider scaling out
+              inference replicas or increasing KEDA targetValue threshold.
+
+    # ── KV-Cache & Inference Queue ─────────────────────────────────────────────
+    - name: inference.kvcache
+      interval: 15s
+      rules:
+        - alert: KVCacheSaturationWarning
+          expr: vllm_gpu_cache_usage_perc > 0.85
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "KV-cache >85% on {{ $labels.model_name }} — approaching saturation"
+            description: >
+              KV-cache at {{ $value | humanizePercentage }}. Above 90% triggers preemption.
+              Consider scaling out or reducing max_num_seqs.
+
+        - alert: KVCacheSaturation
+          expr: vllm_gpu_cache_usage_perc > 0.90
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "KV-cache saturated on {{ $labels.model_name }} — requests being preempted"
+            description: >
+              KV-cache at {{ $value | humanizePercentage }}.
+              Requests are being preempted. See RB-001 for recovery steps.
+            runbook_url: "https://github.com/himanshusharma/ai-platform-lab/blob/main/docs/runbooks/RB-001-ollama-oom-recovery.md"
+
+        - alert: InferenceQueueDepthHigh
+          expr: sum(vllm_num_waiting_requests) by (model_name) > 10
+          for: 3m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Inference queue depth > 10 for {{ $labels.model_name }}"
+            description: >
+              {{ $value }} requests queued for 3+ minutes. KEDA should have scaled out.
+              Check KEDA ScaledObject status: kubectl get scaledobject -n inference
+
+        - alert: InferencePreemptionDetected
+          expr: sum(vllm_num_preempted_requests) by (model_name) > 0
+          for: 1m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Request preemption detected — KV-cache pressure on {{ $labels.model_name }}"
+            description: >
+              {{ $value }} requests preempted due to KV-cache exhaustion.
+              This increases per-request latency. Monitor TTFT p99.
+
+    # ── SLO: Time to First Token ──────────────────────────────────────────────
+    - name: inference.slo.ttft
+      interval: 30s
+      rules:
+        - record: job:vllm_ttft_p99:rate5m
+          expr: >
+            histogram_quantile(
+              0.99,
+              sum(rate(vllm_time_to_first_token_seconds_bucket[5m])) by (le, model_name)
+            )
+
+        - record: job:vllm_ttft_p50:rate5m
+          expr: >
+            histogram_quantile(
+              0.50,
+              sum(rate(vllm_time_to_first_token_seconds_bucket[5m])) by (le, model_name)
+            )
+
+        - alert: TTFTp99SLOBreach
+          expr: job:vllm_ttft_p99:rate5m > 1.0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+            slo: ttft_p99
+          annotations:
+            summary: "TTFT p99 SLO breach — {{ $labels.model_name }} p99 > 1s"
+            description: >
+              TTFT p99 is {{ $value | humanizeDuration }} (SLO: 1.0s).
+              Likely causes: KV-cache saturation, under-provisioned replicas,
+              or model cold start. Check Grafana inference dashboard.
+
+    # ── SLO: Time Per Output Token ────────────────────────────────────────────
+    - name: inference.slo.tpot
+      interval: 30s
+      rules:
+        - record: job:vllm_tpot_p99:rate5m
+          expr: >
+            histogram_quantile(
+              0.99,
+              sum(rate(vllm_time_per_output_token_seconds_bucket[5m])) by (le, model_name)
+            )
+
+        - alert: TPOTp99SLOBreach
+          expr: job:vllm_tpot_p99:rate5m > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+            slo: tpot_p99
+          annotations:
+            summary: "TPOT p99 SLO breach — {{ $labels.model_name }} per-token latency > 50ms"
+            description: >
+              TPOT p99 is {{ $value }}s (SLO: 0.05s / 50ms).
+              Likely cause: SM clock throttle or high batch size.
+              Check DCGM_FI_DEV_CLOCKS_THROTTLE_REASONS.
+
+    # ── E2E Request Latency ───────────────────────────────────────────────────
+    - name: inference.slo.e2e
+      interval: 30s
+      rules:
+        - record: job:vllm_e2e_p99:rate5m
+          expr: >
+            histogram_quantile(
+              0.99,
+              sum(rate(vllm_e2e_request_latency_seconds_bucket[5m])) by (le, model_name)
+            )
+
+        - alert: E2ELatencyHigh
+          expr: job:vllm_e2e_p99:rate5m > 30.0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "E2E request latency p99 > 30s for {{ $labels.model_name }}"
+            description: >
+              E2E p99 latency is {{ $value | humanizeDuration }}.
+              This includes TTFT + full decode time. High values may indicate
+              very long output sequences or memory bandwidth saturation.
+
+    # ── Platform Health ───────────────────────────────────────────────────────
+    - name: platform.health
+      interval: 60s
+      rules:
+        - alert: MockDCGMExporterDown
+          expr: up{job="mock-dcgm"} == 0
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "mock-dcgm-exporter is down — GPU metrics unavailable"
+            description: >
+              Prometheus cannot scrape mock-dcgm-exporter. GPU dashboard metrics
+              are stale. Check: kubectl get pod -n monitoring -l app=mock-dcgm-exporter
+
+        - alert: InferenceProxyDown
+          expr: up{job="inference-proxy"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "inference-proxy is down — all inference requests failing"
+            description: "Prometheus cannot scrape inference-proxy. Service may be down."

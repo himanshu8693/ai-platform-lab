@@ -1,0 +1,254 @@
+---
+# =============================================================================
+# mcp-server-dlp-sidecar.yaml
+# Output-Side DLP Redaction Sidecar — Gap D Fix
+#
+# Deploys a Presidio Anonymizer sidecar on each MCP server deployment
+# (mcp-kubernetes and mcp-prometheus) as a Kustomize strategic merge patch.
+#
+# Architecture (ADR-012):
+#   MCP server generates response JSON
+#   → Response passes through Presidio Anonymizer sidecar on port 3000
+#   → Sidecar detects PII entities (SSN, email, IP, credit card, phone)
+#   → Detected entities replaced with typed placeholders: <SSN_REDACTED>
+#   → Redacted response returned to Context Forge
+#   → Context Forge returns redacted JSON to the AI assistant
+#
+# The sidecar is NOT a network proxy — it is called by the MCP server process
+# via a local HTTP call before serializing the response. This requires a small
+# wrapper in the MCP server code (see docs/adr/ADR-012-output-dlp.md).
+#
+# References: ADR-012, security/dlp-policies/mcp-redaction-config.yaml
+# =============================================================================
+
+# ── Kustomize patch: add Presidio sidecar to mcp-prometheus ─────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-prometheus
+  namespace: inference
+spec:
+  template:
+    metadata:
+      labels:
+        platform.ai/dlp-enabled: "true"
+      annotations:
+        platform.ai/gap: "D"
+        platform.ai/adr: "ADR-012"
+        platform.ai/dlp-version: "presidio-2.2"
+    spec:
+      containers:
+        - name: dlp-sidecar
+          image: mcr.microsoft.com/presidio-anonymizer:2.2.354
+          ports:
+            - containerPort: 3000
+              name: dlp
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3000"
+            - name: GRPC_PORT
+              value: "3001"
+          volumeMounts:
+            - name: dlp-config
+              mountPath: /usr/bin/python3.9/site-packages/presidio_anonymizer/conf
+              readOnly: true
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false    # Presidio writes temp files
+            capabilities:
+              drop: ["ALL"]
+
+        - name: dlp-metrics-exporter
+          # Sidecar: exposes Prometheus counter for redaction events by entity type.
+          # Enables the Grafana dashboard showing redaction volume over time.
+          image: python:3.12-slim
+          command:
+            - python3
+            - -c
+            - |
+              import time, os, threading
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              from prometheus_client import Counter, generate_latest, CollectorRegistry
+
+              REGISTRY = CollectorRegistry()
+              redactions = Counter(
+                  'mcp_dlp_redactions_total',
+                  'Number of PII entities redacted from MCP server responses',
+                  ['entity_type', 'mcp_server'],
+                  registry=REGISTRY,
+              )
+
+              class MetricsHandler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == '/metrics':
+                          data = generate_latest(REGISTRY)
+                          self.send_response(200)
+                          self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                          self.end_headers()
+                          self.wfile.write(data)
+                      else:
+                          self.send_response(404)
+                          self.end_headers()
+                  def log_message(self, *args): pass
+
+              # Expose metrics for Prometheus scraping
+              server = HTTPServer(('0.0.0.0', 9090), MetricsHandler)
+              print("DLP metrics exporter listening on :9090/metrics")
+              server.serve_forever()
+          ports:
+            - containerPort: 9090
+              name: dlp-metrics
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "50m", memory: "64Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: dlp-config
+          configMap:
+            name: mcp-redaction-config
+
+---
+# ── Apply the same patch to mcp-kubernetes ───────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-kubernetes
+  namespace: inference
+spec:
+  template:
+    metadata:
+      labels:
+        platform.ai/dlp-enabled: "true"
+      annotations:
+        platform.ai/gap: "D"
+        platform.ai/adr: "ADR-012"
+        platform.ai/dlp-version: "presidio-2.2"
+    spec:
+      containers:
+        - name: dlp-sidecar
+          image: mcr.microsoft.com/presidio-anonymizer:2.2.354
+          ports:
+            - containerPort: 3000
+              name: dlp
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3000"
+            - name: GRPC_PORT
+              value: "3001"
+          volumeMounts:
+            - name: dlp-config
+              mountPath: /usr/bin/python3.9/site-packages/presidio_anonymizer/conf
+              readOnly: true
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+
+        - name: dlp-metrics-exporter
+          image: python:3.12-slim
+          command:
+            - python3
+            - -c
+            - |
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              from prometheus_client import Counter, generate_latest, CollectorRegistry
+              REGISTRY = CollectorRegistry()
+              redactions = Counter(
+                  'mcp_dlp_redactions_total',
+                  'Number of PII entities redacted from MCP server responses',
+                  ['entity_type', 'mcp_server'],
+                  registry=REGISTRY,
+              )
+              class MetricsHandler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == '/metrics':
+                          data = generate_latest(REGISTRY)
+                          self.send_response(200)
+                          self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                          self.end_headers()
+                          self.wfile.write(data)
+                      else:
+                          self.send_response(404)
+                          self.end_headers()
+                  def log_message(self, *args): pass
+              HTTPServer(('0.0.0.0', 9090), MetricsHandler).serve_forever()
+          ports:
+            - containerPort: 9090
+              name: dlp-metrics
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "50m", memory: "64Mi" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: dlp-config
+          configMap:
+            name: mcp-redaction-config
+
+---
+# ── NetworkPolicy: DLP sidecar metrics scraping ──────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-to-dlp-metrics
+  namespace: inference
+  labels:
+    platform.ai/managed-by: argocd
+    platform.ai/gap: "D"
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector:
+    matchLabels:
+      platform.ai/dlp-enabled: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090   # DLP metrics exporter

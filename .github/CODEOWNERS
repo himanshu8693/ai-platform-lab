@@ -1,0 +1,63 @@
+# =============================================================================
+# .github/CODEOWNERS
+# Required Reviewers for the ai-platform-lab repository
+#
+# Governance tiers (ADR-015):
+#   1. platform-change-board — required for ALL production path changes (Gap H)
+#   2. platform-security     — required for security/opa-policies/ changes (Gap A)
+#   3. platform-security     — required for security/dlp-policies/ changes (Gap D)
+#   4. platform-lead         — required for ADR changes (architectural decisions)
+#   5. @himanshusharma       — fallback owner for everything else
+#
+# Pattern matching: last matching rule wins (GitHub CODEOWNERS semantics)
+# =============================================================================
+
+# ── Default: all changes require at least one review ─────────────────────────
+*                                                   @himanshusharma
+
+# ── Production paths: platform-change-board required ─────────────────────────
+# Any change to production cluster config requires CAB board review (Gap H / ADR-015)
+clusters/production/**                              @himanshusharma @platform-change-board
+clusters/production/app-of-apps.yaml               @himanshusharma @platform-change-board
+
+# ── OPA security policies: security team required (Gap A / ADR-010) ──────────
+# Changes to Rego policies affect the argument-level authorization surface.
+# Unit tests must pass. Security team must review.
+security/opa-policies/**                            @himanshusharma @platform-security
+
+# ── DLP policies: security team required (Gap D / ADR-012) ───────────────────
+# Changes to redaction config affect what PII passes through to the LLM.
+# Any new entity type addition or score_threshold change requires security review.
+security/dlp-policies/**                            @himanshusharma @platform-security
+
+# ── SPIRE/SPIFFE identity: security team required (Gap B / ADR-009) ──────────
+workloads/ai-assistant/spire-registration.yaml      @himanshusharma @platform-security
+terraform/spiffe-vault-auth.tf                      @himanshusharma @platform-security
+workloads/ai-assistant/mcp-server-sa.yaml           @himanshusharma @platform-security
+
+# ── Vault/Boundary Terraform: platform lead required ─────────────────────────
+# Changes to credential chain Terraform affect the full zero-trust architecture.
+terraform/vault-boundary-auth.tf                    @himanshusharma @platform-lead
+terraform/boundary.tf                               @himanshusharma @platform-lead
+terraform/spiffe-vault-auth.tf                      @himanshusharma @platform-lead
+terraform/pam-federation/**                         @himanshusharma @platform-lead @platform-security
+
+# ── ADR changes: platform lead required ──────────────────────────────────────
+# Architectural Decision Records require explicit lead review before merge.
+# ADRs cannot be deleted — only updated with superseded status.
+docs/adr/**                                         @himanshusharma @platform-lead
+
+# ── CAB hook and production GitOps: change board required (Gap H / ADR-015) ──
+workloads/platform/cab-approval-hook.yaml           @himanshusharma @platform-change-board
+.github/PULL_REQUEST_TEMPLATE/**                    @himanshusharma @platform-change-board
+
+# ── CI/CD pipelines: platform lead required ───────────────────────────────────
+.github/workflows/**                                @himanshusharma @platform-lead
+
+# ── Context Forge deployment: security + platform lead ───────────────────────
+# Changes to the MCP gateway affect the OPA integration and OTel propagation.
+workloads/ai-assistant/context-forge-deployment.yaml  @himanshusharma @platform-security @platform-lead
+
+# ── Air-gap scripts: FDE team required ───────────────────────────────────────
+scripts/fde/**                                      @himanshusharma @platform-lead
+terraform/backends/airgap/**                        @himanshusharma @platform-lead

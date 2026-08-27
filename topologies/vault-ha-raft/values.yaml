@@ -1,0 +1,56 @@
+# =============================================================================
+# topologies/vault-ha-raft/values.yaml
+# Helm values for Vault HA Raft topology
+# =============================================================================
+
+topology:
+  name: "vault-ha-raft"
+  ttlSeconds: 7200
+
+vault:
+  image: "hashicorp/vault:1.17"
+  # 3-node Raft cluster: 1 leader + 2 followers
+  # Minimum for quorum loss simulation (kill leader → 2 of 3 elect new leader).
+  replicas: 3
+
+  # Raft storage (in-cluster, ephemeral — no persistent volume needed for lab).
+  storage: "raft"
+  raftDataPath: "/vault/data"
+
+  # Auto-unseal via Vault Transit (self-sealing lab — not production pattern).
+  # In lab: use Shamir unseal for fault simulation (seal/unseal sequence testing).
+  autoUnseal: false
+
+  # Vault dev mode is disabled — we need HA Raft, not dev mode.
+  devMode: false
+
+  # Initial root token seed (written to Vault KV post-init by bootstrap script).
+  # Override via: -set vault.rootTokenSeed=$(openssl rand -hex 16)
+  rootTokenSeed: "raft-lab-root"
+
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  # Audit logging enabled — writes to stdout for kubectl logs capture.
+  auditLog: true
+
+# ── Test client ───────────────────────────────────────────────────────────────
+vaultTestClient:
+  enabled: true
+  image: "hashicorp/vault:1.17"
+  # Polls vault-0's /v1/sys/health every 10 seconds.
+  # Prometheus metric: vault_client_request_duration_seconds
+  pollIntervalSeconds: 10
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+observability:
+  prometheusUrl: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  otelEndpoint:  "http://otel-collector.monitoring.svc.cluster.local:4317"

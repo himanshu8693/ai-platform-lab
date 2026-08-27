@@ -1,0 +1,373 @@
+---
+# =============================================================================
+# MCP Server Catalog + Bootstrap Job — IBM Context Forge
+#
+# Two resources:
+#   1. ConfigMap: context-forge-catalog
+#      Holds mcp-catalog.yml — declarative registration of backend MCP servers
+#      so Context Forge auto-discovers them on startup. Mounted at /config/ in
+#      the context-forge container (see context-forge-deployment.yaml).
+#
+#   2. Job: context-forge-bootstrap
+#      Runs after Context Forge is ready. Performs idempotent:
+#        a. Gateway registration (mcp-kubernetes + mcp-prometheus)
+#        b. Virtual Server creation with the tool whitelist
+#        c. Service token minting for ai-assistant + storage in Vault KV
+#
+# Why a separate Job instead of catalog.yml alone:
+#   The catalog.yml handles server *discovery* (Context Forge connects to the
+#   server and calls tools/list). A Virtual Server with a specific tool whitelist
+#   requires a POST /api/virtual-servers call with the registered gateway's UUID
+#   and the specific tool UUIDs returned from the discovery phase.
+#   These UUIDs are dynamic — they cannot be hardcoded in a ConfigMap.
+#   The bootstrap Job waits for discovery to complete, then queries the UUIDs
+#   and creates the Virtual Server programmatically.
+# =============================================================================
+
+# ── ConfigMap: context-forge-catalog ─────────────────────────────────────────
+# Declarative MCP server catalog. Context Forge reads this on startup and
+# auto-connects to each server to discover tools, resources, and prompts.
+# MCPGATEWAY_CATALOG_FILE=/config/mcp-catalog.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: context-forge-catalog
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: catalog
+    platform.ai/managed-by: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  mcp-catalog.yml: |
+    # ==========================================================================
+    # AI Platform MCP Server Catalog
+    # Loaded by Context Forge at startup via MCPGATEWAY_CATALOG_FILE
+    # ==========================================================================
+
+    catalog_servers:
+
+      # ── Kubernetes MCP Server ──────────────────────────────────────────────
+      # Provides read-only access to Kubernetes API.
+      # SA: mcp-kubernetes-sa (ClusterRole: mcp-kubernetes-readonly)
+      # Only get/list/watch verbs. No exec, portforward, or write verbs.
+      - id: "mcp-kubernetes"
+        name: "Kubernetes Read-Only Bridge"
+        category: "Infrastructure"
+        url: "http://mcp-kubernetes.inference.svc.cluster.local:8080/sse"
+        transport: "SSE"
+        auth_type: "Open"
+        provider: "AI Platform Lab"
+        description: >
+          Read-only Kubernetes API bridge. Exposes pod status, deployment
+          replicas, events, logs, KEDA ScaledObjects, and Kueue queue state
+          for the inference namespace. No mutation capabilities — all write
+          verbs are absent from the ServiceAccount's ClusterRole.
+        requires_api_key: false
+        secure: false
+        tags:
+          - "kubernetes"
+          - "infrastructure"
+          - "read-only"
+          - "inference-namespace"
+        documentation_url: "https://github.com/himanshusharma/ai-platform-lab/blob/main/docs/adr/ADR-007-context-forge-gateway.md"
+
+      # ── Prometheus MCP Server ─────────────────────────────────────────────
+      # Executes PromQL queries against the platform Prometheus.
+      # Exposes TTFT p99, KV-cache utilisation, KEDA trigger values,
+      # GPU utilisation (simulated DCGM), and burn-rate SLO status.
+      - id: "mcp-prometheus"
+        name: "Prometheus PromQL Bridge"
+        category: "Observability"
+        url: "http://mcp-prometheus.inference.svc.cluster.local:8081/sse"
+        transport: "SSE"
+        auth_type: "Open"
+        provider: "AI Platform Lab"
+        description: >
+          Live PromQL execution against the platform Prometheus instance.
+          Provides real-time inference SLOs (TTFT p99, TPOT p99),
+          KEDA autoscaling signals (queue depth, KV-cache pressure),
+          GPU utilisation metrics, and burn-rate alert status.
+        requires_api_key: false
+        secure: false
+        tags:
+          - "prometheus"
+          - "observability"
+          - "slo"
+          - "inference-metrics"
+          - "dcgm"
+        documentation_url: "https://github.com/himanshusharma/ai-platform-lab/blob/main/docs/adr/ADR-007-context-forge-gateway.md"
+
+    categories:
+      - Infrastructure
+      - Observability
+
+    auth_types:
+      - Open
+
+---
+# ── Job: context-forge-bootstrap ─────────────────────────────────────────────
+# Idempotent bootstrap Job. Runs after context-forge Deployment is Ready.
+# Performs:
+#   1. Poll /health until Context Forge is responding
+#   2. Login as PLATFORM_ADMIN to get admin JWT
+#   3. List registered gateways — if mcp-kubernetes is already registered, skip
+#   4. Register mcp-kubernetes + mcp-prometheus as gateways (POST /api/gateways)
+#   5. Wait for both gateways to complete tool discovery (GET /api/gateways/<id>)
+#   6. Collect tool UUIDs for the whitelist
+#   7. Create Virtual Server "ai-platform-ops" with whitelisted tool UUIDs
+#   8. Mint a long-lived service token for ai-assistant (no expiry or 1-year)
+#   9. Store the service token in Vault KV at:
+#        secret/data/ai-platform/context-forge/service-token
+#
+# The Job is idempotent: all steps check existence before creating.
+# On fresh cluster rebuild, all steps execute. On config change, only
+# the affected step re-executes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: context-forge-bootstrap
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: bootstrap
+    platform.ai/managed-by: argocd
+  annotations:
+    # ArgoCD: re-run this Job when the ConfigMap or Deployment changes.
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600    # Clean up after 1 hour
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: context-forge-bootstrap
+    spec:
+      serviceAccountName: context-forge-bootstrap-sa
+      restartPolicy: OnFailure
+
+      initContainers:
+        # Wait for Context Forge to be healthy before bootstrapping
+        - name: wait-for-context-forge
+          image: curlimages/curl:8.5.0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Context Forge /health..."
+              until curl -sf http://context-forge.inference.svc.cluster.local:4444/health; do
+                echo "Not ready yet. Retrying in 5s..."
+                sleep 5
+              done
+              echo "Context Forge is healthy."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+      containers:
+        - name: bootstrap
+          image: python:3.12-slim
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+
+              pip install --quiet httpx vault-sdk python-jose[cryptography]
+
+              python3 - <<'PYTHON'
+              import os, sys, time, httpx, json
+
+              FORGE_URL   = "http://context-forge.inference.svc.cluster.local:4444"
+              ADMIN_EMAIL = os.environ["PLATFORM_ADMIN_EMAIL"]
+              ADMIN_PASS  = open("/vault/secrets/admin-password").read().strip()
+              VAULT_ADDR  = "http://vault.vault.svc.cluster.local:8200"
+              VAULT_TOKEN = open("/vault/secrets/vault-token").read().strip()
+
+              # ── 1. Authenticate to Context Forge Admin API ────────────────
+              print("[1] Authenticating to Context Forge...")
+              r = httpx.post(
+                  f"{FORGE_URL}/auth/email/login",
+                  json={"email": ADMIN_EMAIL, "password": ADMIN_PASS},
+              )
+              r.raise_for_status()
+              admin_token = r.json()["access_token"]
+              auth = {"Authorization": f"Bearer {admin_token}"}
+              print("    Authenticated.")
+
+              # ── 2. Register gateways (idempotent) ─────────────────────────
+              print("[2] Registering MCP backend gateways...")
+              existing = httpx.get(f"{FORGE_URL}/api/gateways", headers=auth).json()
+              existing_names = {g["name"] for g in existing.get("gateways", [])}
+
+              GATEWAYS = [
+                {
+                  "name": "mcp-kubernetes",
+                  "url":  "http://mcp-kubernetes.inference.svc.cluster.local:8080/sse",
+                  "transport": "SSE",
+                  "description": "Read-only Kubernetes API bridge — inference namespace",
+                },
+                {
+                  "name": "mcp-prometheus",
+                  "url":  "http://mcp-prometheus.inference.svc.cluster.local:8081/sse",
+                  "transport": "SSE",
+                  "description": "PromQL live query bridge — AI platform Prometheus",
+                },
+              ]
+
+              gw_ids = {}
+              for gw in GATEWAYS:
+                  if gw["name"] in existing_names:
+                      print(f"    Gateway '{gw['name']}' already registered. Skipping.")
+                      for eg in existing["gateways"]:
+                          if eg["name"] == gw["name"]:
+                              gw_ids[gw["name"]] = eg["id"]
+                      continue
+                  r = httpx.post(f"{FORGE_URL}/api/gateways", headers=auth, json=gw)
+                  r.raise_for_status()
+                  gid = r.json()["id"]
+                  gw_ids[gw["name"]] = gid
+                  print(f"    Registered '{gw['name']}' → id={gid}")
+
+              # ── 3. Wait for tool discovery to complete ─────────────────────
+              print("[3] Waiting for tool discovery...")
+              for name, gid in gw_ids.items():
+                  for attempt in range(30):
+                      gw = httpx.get(f"{FORGE_URL}/api/gateways/{gid}", headers=auth).json()
+                      tool_count = len(gw.get("tools", []))
+                      if tool_count > 0:
+                          print(f"    '{name}': {tool_count} tools discovered.")
+                          break
+                      time.sleep(3)
+                  else:
+                      print(f"    WARNING: '{name}' has 0 tools after 90s. Check server health.")
+
+              # ── 4. Collect tool UUIDs for the Virtual Server whitelist ─────
+              print("[4] Collecting tool UUIDs for Virtual Server whitelist...")
+              all_tools = httpx.get(f"{FORGE_URL}/api/tools", headers=auth).json()
+
+              # Whitelist: only these specific MCP tool names are exposed to the LLM.
+              # Any tool not in this list is invisible to the AI assistant.
+              WHITELISTED_TOOL_NAMES = {
+                  # Kubernetes MCP server tools
+                  "get_pod", "list_pods",
+                  "get_deployment", "list_deployments",
+                  "get_events",
+                  "get_logs",
+                  # Prometheus MCP server tools
+                  "execute_query", "execute_range_query",
+                  "list_metrics", "get_metric_metadata",
+              }
+
+              whitelisted_ids = []
+              for tool in all_tools.get("tools", []):
+                  if tool["name"] in WHITELISTED_TOOL_NAMES:
+                      whitelisted_ids.append(tool["id"])
+                      print(f"    Whitelisted: {tool['name']} ({tool['id'][:8]}...)")
+
+              print(f"    Total whitelisted tools: {len(whitelisted_ids)}")
+
+              # ── 5. Create Virtual Server (idempotent) ──────────────────────
+              print("[5] Creating Virtual Server 'ai-platform-ops'...")
+              existing_vs = httpx.get(f"{FORGE_URL}/api/virtual-servers", headers=auth).json()
+              vs_names = {v["name"] for v in existing_vs.get("virtual_servers", [])}
+
+              if "ai-platform-ops" not in vs_names:
+                  vs_payload = {
+                      "name": "ai-platform-ops",
+                      "description": (
+                          "Curated read-only tool set for the AI assistant. "
+                          "Whitelisted tools: K8s read ops + Prometheus PromQL. "
+                          "No mutation tools exposed."
+                      ),
+                      "gateway_ids":      list(gw_ids.values()),
+                      "tool_ids":         whitelisted_ids,
+                      "expose_tools":     True,
+                      "expose_resources": False,    # No resource exposure — not needed
+                      "expose_prompts":   False,    # No prompt templates exposed
+                  }
+                  r = httpx.post(f"{FORGE_URL}/api/virtual-servers", headers=auth, json=vs_payload)
+                  r.raise_for_status()
+                  vs = r.json()
+                  vs_id = vs["id"]
+                  print(f"    Created Virtual Server → id={vs_id}")
+                  print(f"    Endpoint: {FORGE_URL}/virtual-servers/{vs_id}/sse")
+              else:
+                  print("    Virtual Server 'ai-platform-ops' already exists. Skipping.")
+                  for vs in existing_vs["virtual_servers"]:
+                      if vs["name"] == "ai-platform-ops":
+                          vs_id = vs["id"]
+
+              # ── 6. Mint service token for ai-assistant ─────────────────────
+              print("[6] Minting service token for ai-assistant...")
+              # Create a non-expiring service token (exp=0) for the AI assistant.
+              # Stored in Vault so Vault Agent injects it into the assistant pod.
+              r = httpx.post(
+                  f"{FORGE_URL}/auth/tokens",
+                  headers=auth,
+                  json={"username": "ai-assistant@platform", "exp": 0},
+              )
+              r.raise_for_status()
+              service_token = r.json()["token"]
+
+              # ── 7. Store service token in Vault KV ────────────────────────
+              print("[7] Storing service token in Vault KV...")
+              r = httpx.post(
+                  f"{VAULT_ADDR}/v1/secret/data/ai-platform/context-forge/service-token",
+                  headers={"X-Vault-Token": VAULT_TOKEN},
+                  json={"data": {"value": service_token}},
+              )
+              r.raise_for_status()
+              print(f"    Service token stored at: secret/data/ai-platform/context-forge/service-token")
+
+              # ── 8. Write Virtual Server ID for ai-assistant to discover ───
+              vs_endpoint = f"{FORGE_URL}/virtual-servers/{vs_id}/sse"
+              r = httpx.post(
+                  f"{VAULT_ADDR}/v1/secret/data/ai-platform/context-forge/virtual-server-endpoint",
+                  headers={"X-Vault-Token": VAULT_TOKEN},
+                  json={"data": {"url": vs_endpoint, "virtual_server_id": vs_id}},
+              )
+              r.raise_for_status()
+              print(f"    Virtual Server endpoint stored in Vault.")
+
+              print("\n[✓] Bootstrap complete.")
+              print(f"    Context Forge Admin UI: {FORGE_URL}/admin")
+              print(f"    Virtual Server SSE:     {vs_endpoint}")
+              PYTHON
+
+          env:
+            - name: PLATFORM_ADMIN_EMAIL
+              value: "admin@ai-platform.internal"
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+
+---
+# ── ServiceAccount: context-forge-bootstrap ──────────────────────────────────
+# The bootstrap Job needs Vault access (to store the service token) but no
+# Kubernetes API access beyond reading the Secret in the inference namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: context-forge-bootstrap-sa
+  namespace: inference
+  labels:
+    app.kubernetes.io/name: context-forge
+    app.kubernetes.io/component: bootstrap
+    platform.ai/managed-by: argocd
+automountServiceAccountToken: false

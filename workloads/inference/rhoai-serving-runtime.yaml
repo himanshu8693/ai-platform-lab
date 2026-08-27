@@ -1,0 +1,210 @@
+---
+# =============================================================================
+# Red Hat OpenShift AI (RHOAI) — ServingRuntime + InferenceService
+#
+# This file is the IBM internal transfer artefact.
+# It translates the platform lab's Ollama/vLLM inference stack into the
+# RHOAI KServe-based API surface used by the watsonx.ai infrastructure team.
+#
+# Mapping (see also Appendix G — IBM Translation Map):
+#   Lab resource                   →  RHOAI equivalent
+#   ─────────────────────────────────────────────────────
+#   Ollama Deployment              →  ServingRuntime (this file)
+#   ModelDeployment CRD (operator) →  InferenceService (this file)
+#   Vault sidecar injection        →  RHOAI ModelMesh + IBM Cloud Secret Mgr
+#   Kueue ClusterQueue             →  RHOAI quota management (upstream Kueue)
+#   KEDA ScaledObject              →  KServe raw deployment mode + custom HPA
+#   mock-dcgm-exporter             →  RHOAI ModelMesh metrics + DCGM Exporter
+#
+# RHOAI install prerequisites (not needed in local KinD lab):
+#   1. OpenShift 4.14+ cluster
+#   2. OpenShift AI operator installed from OperatorHub
+#   3. DataScienceCluster CR with KServe component enabled:
+#      spec.components.kserve.managementState: Managed
+#   4. ServiceMesh + Serverless operators installed (required by KServe)
+#
+# Local lab usage:
+#   This file is applied for portfolio demonstration purposes only.
+#   On a KinD cluster without RHOAI, the ServingRuntime CRD is not installed.
+#   To validate the schema without RHOAI, use:
+#     kubectl apply --dry-run=server -f rhoai-serving-runtime.yaml
+#   Or install the KServe CRDs standalone:
+#     kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.13.0/kserve.yaml
+# =============================================================================
+
+# ── ServingRuntime — vllm-llama3 ─────────────────────────────────────────────
+# ServingRuntime defines the container image and protocol for serving a class
+# of models. Multiple InferenceServices can reference the same ServingRuntime.
+#
+# This ServingRuntime wraps vLLM (the same inference engine used in this lab
+# via the ModelDeployment operator) and exposes the OpenAI-compatible REST API
+# on port 8080. RHOAI routes external traffic through its Istio ingress gateway.
+#
+# In watsonx.ai production:
+#   ServingRuntimes are managed by the RHOAI platform team (not data scientists).
+#   This is the platform engineering deliverable — data scientists only submit
+#   InferenceService CRs pointing to a pre-approved ServingRuntime.
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-llama3-runtime
+  namespace: inference
+  labels:
+    platform.ai/managed-by: rhoai
+    platform.ai/inference-engine: vllm
+    platform.ai/model-family: llama3
+  annotations:
+    # OpenShift AI console uses this annotation to display the runtime in the UI
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/template-display-name: "vLLM Llama3 Runtime (OpenAI-compatible)"
+    opendatahub.io/template-name: vllm-llama3-runtime
+spec:
+  # Supported model formats this runtime can serve.
+  # RHOAI uses this list to match InferenceService.spec.predictor.model.modelFormat.
+  supportedModelFormats:
+    - name: pytorch
+      version: "2"
+      autoSelect: true
+    - name: safetensors
+      version: "1"
+      autoSelect: true
+
+  # The serving container. On RHOAI production, this pulls from a Red Hat
+  # certified container registry (registry.redhat.io/rhoai/vllm-runtime-rhel9).
+  # In this lab, we reference the upstream vLLM image directly.
+  containers:
+    - name: kserve-container
+      image: vllm/vllm-openai:v0.6.3
+      command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+      args:
+        # Model path injected by KServe model initialiser init container.
+        # In RHOAI, the model is fetched from S3/OBC by kserve-storage-initializer.
+        - "--model=/mnt/models"
+        - "--served-model-name={{ .Name }}"
+        # Tensor parallelism: set to number of GPUs visible to this pod.
+        # On H100 with 2× MIG 3g.40gb instances, set --tensor-parallel-size=2.
+        - "--tensor-parallel-size=1"
+        # KV-cache memory fraction. 0.9 = 90% of VRAM reserved for KV-cache.
+        # Tune downward if GPU OOM during model load (see RB-001).
+        - "--gpu-memory-utilization=0.9"
+        # Token limits matching the lab KEDA thresholds.
+        - "--max-model-len=8192"
+        # Prometheus metrics endpoint on port 8080 path /metrics.
+        - "--enable-prometheus"
+        # Disable trust_remote_code for supply chain security (Kyverno enforces this).
+        - "--no-trust-remote-code"
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+          name: http1
+      env:
+        # RHOAI/KServe convention: model name injected at admission time.
+        - name: SERVED_MODEL_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['serving.kserve.io/deploymentMode']
+        # Vault-injected HuggingFace token (same pattern as ADR-002).
+        # In RHOAI production, IBM Cloud Secrets Manager provides this via
+        # the RHOAI secrets integration (identical Vault API surface).
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+              optional: true
+      resources:
+        requests:
+          cpu: "4"
+          memory: "16Gi"
+          # Real NVIDIA GPU: nvidia.com/gpu: "1"
+          # MIG instance:   nvidia.com/mig-3g.40gb: "1"
+          # Lab (simulated): no GPU resource — rely on mock-dcgm-exporter
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+      # Read-only root filesystem (Kyverno require-non-root-containers enforces this).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+      # Health probes — KServe uses these to determine readiness before routing traffic.
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 6
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        failureThreshold: 3
+
+  # Prometheus scrape annotations (consumed by RHOAI's ServiceMonitor).
+  # In this lab, Prometheus scrapes via the ServiceMonitor in the monitoring namespace.
+  multiModel: false
+
+---
+# ── InferenceService — llama3-2-3b ───────────────────────────────────────────
+# InferenceService is submitted by the data scientist or model owner.
+# The platform team owns the ServingRuntime above; consumers only submit this.
+#
+# This is the RHOAI equivalent of the ModelDeployment CR managed by the
+# platform's custom operator. For IBM internal transfer, this demonstrates
+# familiarity with the RHOAI production API surface.
+#
+# Key interview point:
+#   "Our lab's ModelDeployment operator is a thin opinionated wrapper around
+#    this exact KServe InferenceService pattern. The operator adds Vault secret
+#    injection lifecycle hooks and KEDA ScaledObject co-management that KServe
+#    raw mode doesn't handle out of the box. In RHOAI, these would be handled
+#    by the RHOAI platform's ModelMesh operator and the RHOAI autoscaling
+#    controller respectively."
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: llama3-2-3b
+  namespace: inference
+  labels:
+    platform.ai/managed-by: rhoai
+    platform.ai/model: llama3.2:3b
+    platform.ai/tenant: platform
+  annotations:
+    # RHOAI deployment mode: RawDeployment allows KEDA + custom HPA.
+    # Serverless mode uses Knative, which conflicts with KEDA.
+    serving.kserve.io/deploymentMode: RawDeployment
+    # Prometheus annotations consumed by the RHOAI monitoring stack.
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  predictor:
+    # Reference to the ServingRuntime above.
+    model:
+      modelFormat:
+        name: pytorch
+        version: "2"
+      runtime: vllm-llama3-runtime
+      # storageUri: the path from which KServe's storage-initializer init container
+      # downloads the model. In RHOAI, this is an S3-compatible OBC (Object Bucket Claim)
+      # provisioned by OpenShift Data Foundation.
+      #
+      # Local lab alternative: use a PVC with the model pre-staged:
+      #   storageUri: pvc://ollama-models-pvc/llama3.2:3b
+      storageUri: "s3://ai-platform-models/llama3.2-3b/"
+      # Resource requests matching the ServingRuntime container spec.
+      resources:
+        requests:
+          cpu: "4"
+          memory: "16Gi"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+    # Minimum replicas: 1 (matches KEDA minReplicaCount in keda-scaledobject.yaml).
+    # KServe RawDeployment mode creates a Deployment; KEDA manages the replica count.
+    minReplicas: 1
+    maxReplicas: 5
