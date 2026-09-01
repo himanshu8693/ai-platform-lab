@@ -198,3 +198,77 @@ injected via Vault Agent sidecar, identical to the HuggingFace token pattern in 
 - Streaming tool results: if a `get_logs` call returns a large log stream, the SSE transport
   handles this naturally. Validate the LLM host's SSE client can handle multi-chunk responses
   without buffering the entire response in memory.
+
+---
+
+## Amendment — F3: Custom Go MCP Server (platform/mcp-server/)
+
+| Field    | Value                                                     |
+|----------|-----------------------------------------------------------|
+| **Date** | 2025-07-01                                                |
+| **Refs** | ADR-006, Phase 6 curriculum Week 3, F3 FDE Coding Module  |
+
+### Context
+
+During MCP Phase 6 Week 3, a gap was identified: the existing open-source
+`mcp-kubernetes` and `mcp-prometheus` containers do not expose a
+`promote_model_version` tool — the ability for an AI assistant to trigger
+a model rollout via a structured, auditable tool call.
+
+A custom Go MCP server was built in `platform/mcp-server/` to close this gap
+and to demonstrate the full MCP server implementation pattern at the
+Staff-level.
+
+### Decision
+
+**Deploy a custom Go MCP server (`platform/mcp-server/`) alongside the upstream
+open-source containers.** The custom server adds:
+
+| Tool | Type | Notes |
+|------|------|-------|
+| `list_model_deployments` | Read | Uses dynamic K8s client against `platform.ai/v1alpha1` |
+| `get_model_deployment` | Read | Returns spec + status; replaces raw kubectl calls |
+| `promote_model_version` | Write (guarded) | Requires X-Promote-Token (Vault-injected, 15-min TTL) |
+| `query_inference_metrics` | Read | Executes PromQL against Prometheus HTTP API |
+
+### Security Analysis — `promote_model_version`
+
+The write tool has a **two-layer guard**:
+
+1. **Application layer**: `X-Promote-Token` header must match `PROMOTE_TOKEN`
+   env var, which is injected by Vault Agent at pod startup with a 15-minute TTL.
+   After TTL expiry, the token file is refreshed by Vault Agent — the old token
+   immediately fails.
+
+2. **RBAC layer**: The `mcp-server` ServiceAccount's ClusterRole contains only
+   `patch` on `platform.ai/modeldeployments`. No `create`, `delete`, `exec`,
+   `apply`, or `escalate` verbs exist in the role. Even if the application-layer
+   token guard were bypassed, the K8s API would reject any other write operation.
+
+This matches the defence-in-depth principle established in ADR-005.
+
+### Transport
+
+The custom server uses HTTP+SSE transport (same as the upstream containers).
+stdio transport is not used — see the existing ADR-006 rationale above.
+
+The server registers a Consul `ServiceDefaults` entry that forces `protocol: http`
+to prevent HTTP/2 upgrade, which is incompatible with SSE long-polling.
+
+### Deployment
+
+See `workloads/ai-assistant/mcp-model-registry-deployment.yaml` for the full
+Deployment, ClusterRole, NetworkPolicy, and Consul ServiceDefaults manifests.
+
+The custom server is deployed as a separate `mcp-model-registry` Deployment
+alongside the existing `mcp-kubernetes` and `mcp-prometheus` containers.
+It does not replace them.
+
+### Updated Architectural Boundaries Table
+
+| Component | K8s RBAC | Vault Secrets | Consul Sidecar | Network Egress |
+|---|---|---|---|---|
+| ai-assistant | None | Ollama API key | Yes | mcp-kubernetes:8080, mcp-prometheus:8080, **mcp-model-registry:8080**, ollama-server:11434 |
+| mcp-kubernetes | Read-only ClusterRole | None | Yes | K8s API :6443 |
+| mcp-prometheus | None | Prometheus bearer token | Yes | Prometheus :9090 |
+| **mcp-model-registry** | **patch on ModelDeployments only** | **PROMOTE_TOKEN (15-min TTL)** | **Yes** | **K8s API :6443, Prometheus :9090** |

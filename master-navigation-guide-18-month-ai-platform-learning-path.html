@@ -287,7 +287,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
 <tr>
   <td class="wk">Month 5<br />Wk 15–18</td>
   <td><span class="pill pd">P7</span> Terraform IaC at scale · modules (VPC + K8s cluster) · remote state S3/MinIO + DynamoDB locking · Checkov + tfsec in CI · PR-based <code>terraform plan</code> comment</td>
-  <td><span class="pa pill">AI Wk 10–12</span> Argo Rollouts canary → "bad" image → AnalysisTemplate auto-rollback recorded · Vault sidecar annotations → <code>/vault/secrets/</code> verified · ADR-002 updated<br /><strong>Go foundations (G3):</strong> tour.golang.org + gobyexample.com · write concurrent Ollama poller in <code>platform/controller/cmd/poller/main.go</code> · run <code>go test -race ./...</code> to detect data races · step through a goroutine deadlock with <code>dlv debug ./cmd/manager</code> · expose a <code>/debug/pprof</code> endpoint and capture a 30-second CPU profile</td>
+  <td><span class="pa pill">AI Wk 10–12</span> Argo Rollouts canary → "bad" image → AnalysisTemplate auto-rollback recorded · Vault sidecar annotations → <code>/vault/secrets/</code> verified · ADR-002 updated<br /><strong>Go foundations (G3):</strong> tour.golang.org + gobyexample.com · write concurrent Ollama poller in <code>platform/controller/cmd/poller/main.go</code> · run <code>go test -race ./...</code> to detect data races · step through a goroutine deadlock with <code>dlv debug ./cmd/manager</code> · expose a <code>/debug/pprof</code> endpoint and capture a 30-second CPU profile<br /><strong>· F1: Resilient HTTP Client:</strong> study <code>internal/httpclient/resilient.go</code> (decorrelated jitter) + <code>paginator.go</code> · run <code>go test ./internal/httpclient/... -v -race</code> (9 PASS) · run Python companion <code>scripts/examples/resilient_client.py</code></td>
   <td><span class="pill pd">Terraform remote state + locking</span></td>
 </tr>
 
@@ -318,7 +318,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
 <tr>
   <td class="wk">Month 8<br />Wk 27–30</td>
   <td><span class="pill pd">P9</span> Istio service mesh · mTLS PeerAuthentication · VirtualService traffic shift · Kiali mesh graph (3–4 Saturdays)</td>
-  <td><span class="pa pill">AI Wk 19–21</span> kubebuilder init + create api → <code>make build</code> + <code>make install</code> pass · OTel distributed traces in Grafana Tempo for a single RAG request · Qdrant deployed + Argo Workflow ingestion pipeline completes</td>
+  <td><span class="pa pill">AI Wk 19–21</span> kubebuilder init + create api → <code>make build</code> + <code>make install</code> pass · OTel distributed traces in Grafana Tempo for a single RAG request · Qdrant deployed + Argo Workflow ingestion pipeline completes<br /><strong>· F2: Idempotent Webhook Receiver:</strong> study <code>internal/webhook/receiver.go</code> (idempotency inversion — failed handlers not recorded) · run <code>go test ./internal/webhook/... -v -race</code> (8 PASS)</td>
   <td><span class="pill pd">mTLS between Flask services enforced</span></td>
 </tr>
 
@@ -367,6 +367,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
   <td>
     <span class="pm pill">MCP Phase 6 · Wk 3–4</span><br />
     <strong>Wk 44 (Phase 6 Wk 3):</strong> Deploy <code>mcp-kubernetes</code> pod · verify read-only RBAC · attempt write tool call → confirm 403 at K8s API layer (not MCP layer) — this is the defence-in-depth proof. ADR-006 written and merged.<br /><br />
+    <strong>F3 — Custom Go MCP Server (replaces "evaluate upstream images"):</strong> Deploy <code>platform/mcp-server/</code> alongside upstream servers · 4 tools: <code>list_model_deployments</code>, <code>get_model_deployment</code>, <code>promote_model_version</code> (write-guarded), <code>query_inference_metrics</code> · run <code>go test ./platform/mcp-server/... -v -race</code> (11 PASS) · read ADR-006 Amendment section · deploy to kind · confirm structured JSON from curl · explain two-layer promote guard verbally<br /><br />
     <strong>Wk 45 (Phase 6 Wk 4):</strong> Deploy <code>ai-assistant</code> client pod · end-to-end two-server tool call: "What is TTFT p99 and how many replicas are ready?" → must use both MCP servers in single turn
   </td>
   <td><span class="pill pm">403 proof committed. E2E two-server call working.</span></td>
@@ -472,7 +473,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
 <tr>
   <td class="wk">Month 14<br />Wk 55–58</td>
   <td><span class="pill pf2">P19</span> FinOps — cost governance, GPU cost attribution (maps to AI lab dashboard)<br /><br /><span class="pill pf2">P20</span> Production operations — incident command, CAB (reinforces Sev-1 narrative)</td>
-  <td><span class="pa pill">AI Wk 42–44</span><br />Wk 42–43: Full 7-stage CI pipeline (lint→test→build→sign→scan→gitops-update→ArgoCD canary) · end-to-end demo recorded<br />Wk 44: KEDA watchdog CronJob · chaos scenario → automated recovery without human kubectl · recorded</td>
+  <td><span class="pa pill">AI Wk 42–44</span><br />Wk 42–43: Full 7-stage CI pipeline (lint→test→build→sign→scan→gitops-update→ArgoCD canary) · end-to-end demo recorded<br />Wk 44: KEDA watchdog CronJob · chaos scenario → automated recovery without human kubectl · recorded<br /><strong>· F4-A: Portfolio Storytelling:</strong> open <code>docs/portfolio/storytelling-scripts.md</code> · practise SD-6-A (F1), SD-6-B (F2), SD-6-C (F3) stories each under 90 sec timed · answer "What would you do differently?" for each without notes</td>
   <td><span class="pill pa">7-stage CI demo recorded. Automated recovery demo recorded.</span></td>
 </tr>
 
@@ -495,7 +496,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
 <tr>
   <td class="wk">Month 16<br />Wk 63–66</td>
   <td><span class="pill pf2">P21</span> Multi-tenancy + SaaS patterns (continue on Saturdays alongside interviews)</td>
-  <td><span class="pb2 pill">Career</span> Open <code>appendix-g</code> §8 IBM 6-step transfer playbook · identify 2 RHOAI/watsonx engineers on IBM Slack · send coffee chat message (verbatim from §8) · inform current manager<br />Practice Script C ("Design multi-tenant GPU inference platform") timed — target under 8 min without notes · record yourself<br />Resume updated with 3-sentence AI platform summary from <code>appendix-g</code> §6</td>
+  <td><span class="pb2 pill">Career</span> Open <code>appendix-g</code> §8 IBM 6-step transfer playbook · identify 2 RHOAI/watsonx engineers on IBM Slack · send coffee chat message (verbatim from §8) · inform current manager<br />Practice Script C ("Design multi-tenant GPU inference platform") timed — target under 8 min without notes · record yourself<br />Resume updated with 3-sentence AI platform summary from <code>appendix-g</code> §6<br /><strong>· F4-B: Mock Interview Simulation:</strong> open <code>docs/portfolio/storytelling-scripts.md</code> F4-B section · run through Round 1–3 practice questions with timer · target score 4+ on all Round 3 questions · SD-7 crux story in 90 sec, no notes, audio recorded</td>
   <td><span class="pill pb2">2 IBM coffee chats booked. Script C &lt;8 min.</span></td>
 </tr>
 
@@ -535,8 +536,9 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
       <li>Go concurrency, channels, goroutines</li>
       <li><strong>G3:</strong> Go debugging — <code>go test -race ./...</code>, <code>dlv debug ./cmd/manager</code>, <code>/debug/pprof</code> CPU profiles</li>
       <li><strong>G4:</strong> Python profiling — <code>py-spy top --pid &lt;pid&gt;</code>, <code>pprof</code> HTTP endpoint flame graphs</li>
+      <li><strong>F1 — Resilient HTTP Client:</strong> <code>internal/httpclient/resilient.go</code> + <code>paginator.go</code> + Python companion <code>scripts/examples/resilient_client.py</code> — decorrelated jitter, cursor pagination</li>
     </ul>
-    <div class="app-when">Open: Month 3 (Python Week 1–4) + Month 5 (Go foundations, tour.golang.org sequence + G3 debugging tools) + Month 11 Wk 42 (G1 agent loop — must run before MCP client code).</div>
+    <div class="app-when">Open: Month 3 (Python Week 1–4) + Month 5 (Go foundations, tour.golang.org sequence + G3 debugging tools + F1 resilient client) + Month 11 Wk 42 (G1 agent loop — must run before MCP client code).</div>
   </div>
   <div class="app-card">
     <div class="app-title">Appendix C — Zero-Trust Supply Chain Security Lab</div>
@@ -709,6 +711,17 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
     </ul>
     <div class="app-when">Open: P18 / portfolio-polish phase. Required for Sr SA and cloud FDE roles that will probe "how does this scale beyond your laptop." Fill in all TBD cost placeholders in ADR-016 with real Spot pricing numbers before any interview where cloud deployment is on the job description.</div>
   </div>
+  <div class="app-card">
+    <div class="app-title">F1–F4 — FDE Coding &amp; Career Modules</div>
+    <ul>
+      <li><strong>F1 — Resilient HTTP Client + Paginator:</strong> <code>platform/controller/internal/httpclient/resilient.go</code> · <code>paginator.go</code> · <code>resilient_test.go</code> (9 tests) · Python companion <code>scripts/examples/resilient_client.py</code> · <code>cmd/poller/main.go</code> (integration target)</li>
+      <li><strong>F2 — Idempotent Webhook Receiver:</strong> <code>platform/controller/internal/webhook/receiver.go</code> · <code>receiver_test.go</code> (8 tests) · sync.Map idempotency table · controller-runtime Runnable interface</li>
+      <li><strong>F3 — Custom Go MCP Server:</strong> <code>platform/mcp-server/main.go</code> · <code>tools.go</code> · <code>tools_test.go</code> (11 tests) · <code>workloads/ai-assistant/mcp-model-registry-deployment.yaml</code> · ADR-006 Amendment · HTTP+SSE transport · Vault-injected PROMOTE_TOKEN two-layer write guard</li>
+      <li><strong>F4-A — Portfolio Storytelling (Month 14):</strong> <code>docs/portfolio/storytelling-scripts.md</code> · SD-6-A through SD-6-F (one STAR story per F1–F3 + GitOps, ZTNA, Observability) · SD-7 Staff crux story · "What would you do differently?" answers</li>
+      <li><strong>F4-B — Mock Interview Simulation (Month 16):</strong> Round 1–3 practice question banks · scoring rubric (1–5) · SD-7 90-second delivery target · audio recording protocol</li>
+    </ul>
+    <div class="app-when">F1: Month 5 (alongside Go foundations). F2: Month 8 (alongside kubebuilder). F3: Month 11–12 (MCP Phase 6 Wk 3, replaces "evaluate upstream images"). F4-A: Month 14 (portfolio polish block). F4-B: Month 16 (mock interviews alongside IBM coffee chats).</div>
+  </div>
 </div>
 
 
@@ -749,7 +762,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
 </div>
 
 
-<h2>You Are Ready to Apply When All 12 Are True</h2>
+<h2>You Are Ready to Apply When All 16 Are True</h2>
 <div class="callout success">
   <strong>Target: end of sequence-position Month 17 (≈ calendar Month 18.5 after the hardening insert)</strong>
   <br />
@@ -764,7 +777,11 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
   ☐  <strong>Can answer, cold, without notes:</strong> "What's your p99 session latency at 50 concurrent tool calls?" and "How does your GitOps model survive a CAB approval process?" — the two questions most likely to resurface verbatim in a real Staff loop<br />
   ☐  <strong>G1 — LLM SDK tool loop:</strong> <code>scripts/examples/agent-tool-loop.py</code> has run end-to-end and you can explain the <code>tool_use</code> / <code>tool_result</code> message cycle from memory<br />
   ☐  <strong>G3 — Go debugging:</strong> have stepped through a goroutine deadlock with <code>dlv</code>, caught a data race with <code>go test -race</code>, and profiled with <code>pprof</code> — can describe findings in an interview<br />
-  ☐  <strong>G4/G5/G6/G7 — GHAS, Ansible, Cloud ADR:</strong> CodeQL + Dependabot + secret scanning workflows are live in CI · two Ansible playbooks (<code>configure-inference-node.yaml</code>, <code>rotate-vault-approle.yaml</code>) run clean via <code>ci-ansible.yml</code> · ADR-016 and <code>terraform/backends/cloud/eks-ephemeral.tf</code> committed with non-placeholder cost rationale
+  ☐  <strong>G4/G5/G6/G7 — GHAS, Ansible, Cloud ADR:</strong> CodeQL + Dependabot + secret scanning workflows are live in CI · two Ansible playbooks (<code>configure-inference-node.yaml</code>, <code>rotate-vault-approle.yaml</code>) run clean via <code>ci-ansible.yml</code> · ADR-016 and <code>terraform/backends/cloud/eks-ephemeral.tf</code> committed with non-placeholder cost rationale<br />
+  ☐  <strong>F1 — Resilient HTTP Client:</strong> <code>go test ./internal/httpclient/... -v -race</code> 9/9 PASS · decorrelated jitter algorithm explained verbally · Python companion run without errors<br />
+  ☐  <strong>F2 — Idempotent Webhook Receiver:</strong> <code>go test ./internal/webhook/... -v -race</code> 8/8 PASS · "don't record failed handler" idempotency inversion explained verbally<br />
+  ☐  <strong>F3 — Custom Go MCP Server:</strong> <code>go test ./platform/mcp-server/... -v -race</code> 11/11 PASS · deployed to kind · <code>promote_model_version</code> two-layer guard explained verbally · ADR-006 Amendment section read<br />
+  ☐  <strong>F4 — Portfolio Storytelling + Mock Interview:</strong> SD-6-A through SD-6-F stories all under 90 sec timed · SD-7 crux story 90 sec recorded · all Round 3 mock interview questions scored 4+ on rubric
 </div>
 
 
@@ -773,7 +790,7 @@ footer{margin-top:46px;padding-top:10px;border-top:1px solid var(--border);
   "I built a production-grade AI inference platform on Kubernetes with a GitOps-managed control plane: ArgoCD App-of-Apps, multi-tenant workload isolation via Kueue, autoscaling via KEDA dual triggers on queue depth and KV-cache saturation, and a full zero-trust security stack — Consul mTLS, Vault Agent secret injection, Kyverno admission policies, and Falco runtime rules. I integrated an AI assistant as an MCP client that calls live Prometheus and Kubernetes API tools through IBM Context Forge, which enforces a Virtual Server tool whitelist for blast-radius control — the same governance pattern as IBM watsonx.governance AI Factsheets. Beyond tool-name whitelisting, I close the argument-level gap with an OPA sidecar evaluating every tool call's actual payload, bind the MCP server's identity with SPIFFE/SPIRE SVIDs instead of a static service-account token, redact PII on the response path with a Presidio DLP sidecar, and correlate every Boundary session recording back to its originating OTel trace for sub-5-minute incident reconstruction. I benchmarked the full credential-brokering chain under load with k6 and can quote real p99 session-establishment latency, not an estimate. Every tool call is traced in Grafana Tempo. The platform can be stood up from a fresh clone in under ten minutes, and I've also run it through an air-gapped VPC bootstrap and a CyberArk-brownfield credential federation scenario to prove it survives a real enterprise client network. I hold CKA, CKS, Vault Professional, NCA-AIIO, EX267 RHOAI, and NCP-AIO."
 </div>
 
-<footer><p>Made with IBM Bob · Navigation guide covers all topics including MCP servers, IBM Context Forge, the Zero-Trust Hardening Sprint (ADR-008–016), and the G1–G7 Skills Coverage modules</p></footer>
+<footer><p>Made with IBM Bob · Navigation guide covers all topics including MCP servers, IBM Context Forge, the Zero-Trust Hardening Sprint (ADR-008–016), the G1–G7 Skills Coverage modules, and the F1–F4 FDE Coding &amp; Career Modules</p></footer>
 </div>
 </body>
 </html>

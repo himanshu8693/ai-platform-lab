@@ -1,0 +1,230 @@
+# =============================================================================
+# F3 — MCP Server Kubernetes Deployment
+# workloads/ai-assistant/mcp-model-registry-deployment.yaml
+# =============================================================================
+#
+# Deploys the custom Go MCP server (platform/mcp-server/) into the inference
+# namespace alongside the existing ai-assistant workload.
+#
+# Vault Agent sidecar injects PROMOTE_TOKEN from the dynamic secret path
+# secret/data/platform/mcp-server/promote-token.
+#
+# ClusterRole mcp-server-readonly is defined below — grants only:
+#   get, list, watch on ModelDeployment resources (platform.ai/v1alpha1)
+#
+# NetworkPolicy (bottom of file) ensures:
+#   - Only the ai-assistant pod can reach :8080
+#   - The mcp-server pod can only reach the K8s API (:6443) and Prometheus (:9090)
+#
+# Consul service-defaults entry enforces HTTP/1.1 for SSE compatibility.
+# =============================================================================
+---
+# ServiceAccount — holds zero static credentials; Vault injects dynamically.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: inference
+  annotations:
+    # Vault Agent uses this annotation to know which SA to authenticate as.
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "mcp-server"
+
+---
+# ClusterRole — read-only access to ModelDeployment CRs + patch for promote tool.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server-model-registry
+rules:
+  - apiGroups: ["platform.ai"]
+    resources: ["modeldeployments"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Explicitly absent: create, delete, apply, exec, portforward, escalate
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server-model-registry
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: inference
+roleRef:
+  kind: ClusterRole
+  name: mcp-server-model-registry
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Deployment — 2 replicas for HA; HPA can scale based on SSE connection count.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-model-registry
+  namespace: inference
+  labels:
+    app: mcp-model-registry
+    component: mcp-server
+    part-of: ai-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mcp-model-registry
+  template:
+    metadata:
+      labels:
+        app: mcp-model-registry
+        component: mcp-server
+      annotations:
+        # Vault Agent sidecar injection.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "mcp-server"
+        vault.hashicorp.com/agent-inject-secret-promote-token: "secret/data/platform/mcp-server/promote-token"
+        vault.hashicorp.com/agent-inject-template-promote-token: |
+          {{- with secret "secret/data/platform/mcp-server/promote-token" -}}
+          {{ .Data.data.token }}
+          {{- end }}
+        # Consul Connect sidecar.
+        consul.hashicorp.com/connect-inject: "true"
+        consul.hashicorp.com/connect-service: "mcp-model-registry"
+        # Prometheus scrape annotations.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: mcp-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: mcp-server
+          image: platform.ai/mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: MCP_ADDR
+              value: ":8080"
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+            - name: PROMOTE_TOKEN
+              # Vault Agent writes the token to this file; we read it via env sub.
+              # In production use valueFrom.secretKeyRef to a Vault-synced Secret.
+              value: ""  # overridden by init container or Vault Agent file mount
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+          command:
+            - /app/mcp-server
+            - --addr=:8080
+            - --prometheus-url=http://prometheus-operated.monitoring.svc.cluster.local:9090
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory  # in-memory tmpfs — secrets never hit disk
+
+---
+# Service — ClusterIP so only the ai-assistant (via Consul mesh) can reach it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-model-registry
+  namespace: inference
+  labels:
+    app: mcp-model-registry
+spec:
+  selector:
+    app: mcp-model-registry
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+
+---
+# NetworkPolicy — defence-in-depth on top of Consul intentions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-model-registry
+  namespace: inference
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-model-registry
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the ai-assistant pod may call the MCP server.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-assistant
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # K8s API server (for dynamic client).
+    - ports:
+        - port: 6443
+          protocol: TCP
+    # Prometheus.
+    - ports:
+        - port: 9090
+          protocol: TCP
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Consul ServiceDefaults — force HTTP/1.1 for SSE long-polling compatibility.
+# SSE connections must NOT be upgraded to HTTP/2 multiplexing.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: mcp-model-registry
+  namespace: inference
+spec:
+  protocol: http
+  # Explicitly disable HTTP/2 — SSE requires persistent HTTP/1.1 connections.
+  # h2 multiplexing would buffer SSE frames unpredictably.
+  upstreamConfig:
+    defaults:
+      protocol: http

@@ -747,17 +747,23 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
     Deploy test pod with Vault sidecar annotations — verify <code>/vault/secrets/</code> has injected file. Update ADR-002 with live observations.<br />
     Start Go: <a href="https://tour.golang.org">tour.golang.org</a> + <a href="https://gobyexample.com">gobyexample.com</a>. Write concurrent Ollama poller in <code>platform/controller/cmd/poller/main.go</code>.<br /><br />
     <strong>G3 — Go debugging (do in this same block):</strong> Run <code>go test -race ./...</code> against the poller package — fix any reported data races before moving on. Install <code>dlv</code> (<code>go install github.com/go-delve/delve/cmd/dlv@latest</code>), set a breakpoint inside <code>Reconcile()</code> and step through a simulated deadlock. Add <code>/debug/pprof</code> handler to the poller HTTP server, run for 30 seconds under load, capture a CPU profile with <code>go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30</code>. Commit the <code>pprof</code> flamegraph PNG to <code>docs/benchmarks/</code>.<br /><br />
-    <strong>G1 prep — run now, gate later:</strong> Execute <code>scripts/examples/agent-tool-loop.py</code> end-to-end (set <code>ANTHROPIC_API_KEY</code> in your environment). This is not the MCP work — it is the Anthropic SDK tool-use loop proof. You will need it as a gate before Month 11 Wk 31.
+    <strong>G1 prep — run now, gate later:</strong> Execute <code>scripts/examples/agent-tool-loop.py</code> end-to-end (set <code>ANTHROPIC_API_KEY</code> in your environment). This is not the MCP work — it is the Anthropic SDK tool-use loop proof. You will need it as a gate before Month 11 Wk 31.<br /><br />
+    <strong>F1 — Resilient HTTP Client (FDE Coding Module):</strong> The poller's bare <code>http.Get</code> calls will be rate-limited at 429 in any real registry. Now replace them with the resilient client. The files are already committed — your job is to understand every line, run the tests, and wire the client into the poller's poll cycle.<br />
+    Study the decorrelated jitter algorithm in <code>internal/httpclient/resilient.go</code>. Run <code>go test ./internal/httpclient/... -v -race</code> — all 9 tests must pass. Read the paginator in <code>paginator.go</code>: understand why <code>HasMore &amp;&amp; NextCursor != ""</code> is the termination condition. Run the Python companion <code>scripts/examples/resilient_client.py</code> to see the same pattern in stdlib Python with no external deps.
     <div class="fp-block">
       <div class="fp-row fp-ai"><em class="fp-icon">📝</em><span class="fp-label">Study</span><span class="fp-path">ai-platform-lab/workloads/inference/argo-rollout.yaml</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Update</span><span class="fp-path">ai-platform-lab/docs/adr/ADR-002-secret-injection-strategy.md</span></div>
-      <div class="fp-row fp-ai"><em class="fp-icon">📝</em><span class="fp-label">Create</span><span class="fp-path">ai-platform-lab/platform/controller/cmd/poller/main.go (new)</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📝</em><span class="fp-label">Create/Study</span><span class="fp-path">ai-platform-lab/platform/controller/cmd/poller/main.go</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">G3 run</span><span class="fp-path">go test -race ./... &nbsp;|&nbsp; dlv debug ./cmd/manager &nbsp;|&nbsp; go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">G3 commit</span><span class="fp-path">ai-platform-lab/docs/benchmarks/ (pprof flamegraph PNG)</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">G1 prep run</span><span class="fp-path">ai-platform-lab/scripts/examples/agent-tool-loop.py</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">F1 — tests</span><span class="fp-path">go test ./internal/httpclient/... -v -race (9 tests, all PASS)</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F1 — resilient client</span><span class="fp-path">ai-platform-lab/platform/controller/internal/httpclient/resilient.go</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F1 — paginator</span><span class="fp-path">ai-platform-lab/platform/controller/internal/httpclient/paginator.go</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F1 — Python companion</span><span class="fp-path">ai-platform-lab/scripts/examples/resilient_client.py (python3 ./scripts/examples/resilient_client.py)</span></div>
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">Go track</span><span class="fp-path">~/Desktop/AI-Roadmap/appendix-b-python-go-learning-paths.html (Go section + G3 debugging tools)</span></div>
     </div>
-    <div class="gate">✓ Gate: Argo Rollouts auto-rollback demo recorded. Vault secret injected into test pod. Go poller compiles and runs. <code>go test -race</code> clean. <code>dlv</code> breakpoint hit in Reconcile(). pprof flamegraph committed. <code>agent-tool-loop.py</code> completes one round-trip tool call.</div>
+    <div class="gate">✓ Gate: Argo Rollouts auto-rollback demo recorded. Vault secret injected into test pod. Go poller compiles and runs. <code>go test -race</code> clean on <code>./...</code>. <code>dlv</code> breakpoint hit in Reconcile(). pprof flamegraph committed. <code>agent-tool-loop.py</code> completes one round-trip tool call. <strong>F1:</strong> <code>go test ./internal/httpclient/... -v -race</code> — 9/9 PASS. Decorrelated jitter algorithm explained verbally without notes.</div>
   </div>
 </div>
 
@@ -849,13 +855,16 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
       <li>Wk 23: GPU cost attribution dashboard per-team in Grafana</li>
       <li>Wk 24: Capstone 1 README committed + first blog post published on dev.to</li>
     </ul>
+    <strong>F2 — Idempotent Webhook Receiver (FDE Coding Module):</strong> The operator needs to receive model-version push events from the registry. Duplicate deliveries (at-least-once webhooks) must not trigger redundant patches. Study the receiver at <code>internal/webhook/receiver.go</code>: focus on why a failed handler invocation is <em>not</em> recorded in the idempotency table. Run the tests — <code>go test ./internal/webhook/... -v -race</code> — all 8 must pass. Explain verbally: "What happens if the same event arrives 100 times simultaneously?" (sync.Map concurrent reads are safe; first writer wins via Store atomicity.)
     <div class="fp-block">
       <div class="fp-row fp-ai"><em class="fp-icon">📝</em><span class="fp-label">kubebuilder</span><span class="fp-path">ai-platform-lab/platform/controller/main.go &nbsp; ai-platform-lab/platform/controller/go.mod</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Multi-tenant</span><span class="fp-path">ai-platform-lab/workloads/multi-tenant/kueue-cluster-queue.yaml &nbsp; ai-platform-lab/workloads/multi-tenant/resource-quotas.yaml</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Postmortem</span><span class="fp-path">ai-platform-lab/docs/postmortems/PM-001-kvcache-saturation-incident.md</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">F2 — tests</span><span class="fp-path">go test ./internal/webhook/... -v -race (8 tests, all PASS)</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F2 — receiver</span><span class="fp-path">ai-platform-lab/platform/controller/internal/webhook/receiver.go</span></div>
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">RAG lab</span><span class="fp-path">~/Desktop/AI-Roadmap/appendix-e-vector-db-rag-pipeline-lab.html</span></div>
     </div>
-    <div class="gate">✓ Gate: End-to-end RAG query with distributed trace in Tempo. Capstone 1 README on GitHub. Blog post 1 live.</div>
+    <div class="gate">✓ Gate: End-to-end RAG query with distributed trace in Tempo. Capstone 1 README on GitHub. Blog post 1 live. <strong>F2:</strong> <code>go test ./internal/webhook/... -v -race</code> — 8/8 PASS. Explain the "don't record failed handler" idempotency inversion verbally without notes.</div>
   </div>
 </div>
 
@@ -934,15 +943,19 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
       <li>Wk 31 (Phase 6 Wk 1): MCP spec read at <code>modelcontextprotocol.io/specification</code>. Write the 20-line <code>get_current_time</code> server. Verify raw SSE with <code>curl -N -H "Accept: text/event-stream"</code>. Decode the JSON-RPC frames manually.</li>
       <li>Wk 31 (Phase 6 Wk 2): Deploy <code>mcp-prometheus</code> pod. Execute raw <code>tools/call</code> with curl against TTFT p99 PromQL — no LLM in the loop yet.</li>
       <li>Wk 32 (Phase 6 Wk 3): Deploy <code>mcp-kubernetes</code> pod. Verify the read-only RBAC. Attempt a write tool call — confirm 403 at the K8s API layer, not the MCP layer. This is the defence-in-depth proof.</li>
+      <li><strong>F3 — Custom Go MCP Server (FDE Coding Module — replaces "evaluate upstream images" from original Week 3):</strong> Deploy <code>platform/mcp-server/</code> alongside the upstream servers. This is the custom Go MCP server with four tools: <code>list_model_deployments</code>, <code>get_model_deployment</code>, <code>promote_model_version</code> (write-guarded — Vault token required), and <code>query_inference_metrics</code>. Study <code>tools.go</code>: understand the two-layer write guard on <code>promote_model_version</code> (X-Promote-Token header + SA ClusterRole restricts to patch-only). Run <code>go test ./platform/mcp-server/... -v -race</code> — 11 tests must pass. Read the ADR-006 Amendment section. Deploy to your kind cluster and call <code>tools/call list_model_deployments</code> via curl — confirm structured JSON response.</li>
     </ul>
     <div class="fp-block">
       <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">G1 gate (confirm complete)</span><span class="fp-path">ai-platform-lab/scripts/examples/agent-tool-loop.py — one round-trip tool call passes without errors</span></div>
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">Read first</span><span class="fp-path">ai-platform-lab/docs/curriculum/phase6-mcp-ai-assistant.md (Wk 1–3)</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">RBAC</span><span class="fp-path">ai-platform-lab/workloads/ai-assistant/rbac.yaml</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">NetworkPolicy</span><span class="fp-path">ai-platform-lab/workloads/ai-assistant/networkpolicy.yaml</span></div>
-      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">ADR</span><span class="fp-path">ai-platform-lab/docs/adr/ADR-006-mcp-architecture.md</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">ADR</span><span class="fp-path">ai-platform-lab/docs/adr/ADR-006-mcp-architecture.md (including Amendment — F3 section)</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">🔬</em><span class="fp-label">F3 — tests</span><span class="fp-path">go test ./platform/mcp-server/... -v -race (11 tests, all PASS)</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F3 — MCP server</span><span class="fp-path">ai-platform-lab/platform/mcp-server/main.go &nbsp; ai-platform-lab/platform/mcp-server/tools.go</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F3 — K8s manifests</span><span class="fp-path">ai-platform-lab/workloads/ai-assistant/mcp-model-registry-deployment.yaml</span></div>
     </div>
-    <div class="gate">✓ Gate: G1 agent-tool-loop confirmed. Kyverno unsigned image blocked. Falco all 5 rules triggered + 1 new custom rule written. Both MCP servers deployed — raw curl tool calls returning structured JSON.</div>
+    <div class="gate">✓ Gate: G1 agent-tool-loop confirmed. Kyverno unsigned image blocked. Falco all 5 rules triggered + 1 new custom rule written. Both upstream MCP servers deployed — raw curl tool calls returning structured JSON. <strong>F3:</strong> <code>go test ./platform/mcp-server/... -v -race</code> — 11/11 PASS. Custom MCP server deployed to kind cluster — <code>curl -X POST /messages</code> <code>tools/call list_model_deployments</code> returns structured JSON. Explain the two-layer promote guard verbally without notes.</div>
   </div>
 </div>
 
@@ -1272,13 +1285,15 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
       <li>Wk 45–46: Portfolio polish: 10-point README checklist, <code>make up</code> from fresh clone &lt;10 min, CI badge green.</li>
       <li>Wk 47: Capstone 3 README (RAG pipeline) + third blog post published.</li>
     </ul>
+    <strong>F4-A — Portfolio Storytelling (FDE Module, Month 14):</strong> Technical skills are table stakes at Staff level. The differentiator is the ability to narrate your architectural decisions as business impact stories. Open <code>docs/portfolio/storytelling-scripts.md</code> — this is your SD-6 story bank. For each story (SD-6-A through SD-6-F), practise the STAR narrative until it lands in 90 seconds. Focus on SD-6-A (F1 resilient client — explain decorrelated jitter and what problem it solves at a business level), SD-6-B (F2 idempotency inversion decision), and SD-6-C (F3 MCP server write guard). The "What would you do differently?" question is the most important: every SD-6 story has a dedicated answer for it — never skip it.
     <div class="fp-block">
       <div class="fp-row fp-ai"><em class="fp-icon">📝</em><span class="fp-label">CI pipeline</span><span class="fp-path">ai-platform-lab/.github/workflows/ci-cd-platform-gate.yaml</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Makefile</span><span class="fp-path">ai-platform-lab/Makefile (make up target)</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Portfolio</span><span class="fp-path">ai-platform-lab/README.md &nbsp; ai-platform-lab/ARCHITECTURE.md</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F4-A — Story bank</span><span class="fp-path">ai-platform-lab/docs/portfolio/storytelling-scripts.md (SD-6-A through SD-6-F + SD-7)</span></div>
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">Capstone 3</span><span class="fp-path">~/Desktop/AI-Roadmap/appendix-e-vector-db-rag-pipeline-lab.html</span></div>
     </div>
-    <div class="gate">✓ Gate: 3 capstone READMEs committed. 3 blog posts published. <code>make up</code> works end-to-end in under 10 minutes from a fresh clone.</div>
+    <div class="gate">✓ Gate: 3 capstone READMEs committed. 3 blog posts published. <code>make up</code> works end-to-end in under 10 minutes from a fresh clone. <strong>F4-A:</strong> SD-6-A, SD-6-B, SD-6-C stories all under 90 seconds timed. "What would you do differently?" answered for each without notes.</div>
   </div>
 </div>
 
@@ -1339,13 +1354,15 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
   <div class="step-b">
     Open <code>appendix-g-portfolio-interview-readiness.html</code> → Section 8 (IBM 6-step transfer playbook) and Section 5 (Scripts A–D).<br />
     Identify 2 RHOAI/watsonx engineers via IBM internal Slack. Send the coffee chat message (verbatim from §8). Inform current manager of career direction.<br />
-    Practice Script C ("Design a multi-tenant GPU inference platform") timed. Target: under 8 minutes without notes. Record yourself.
+    Practice Script C ("Design a multi-tenant GPU inference platform") timed. Target: under 8 minutes without notes. Record yourself.<br /><br />
+    <strong>F4-B — Mock Interview Simulation (FDE Module, Month 16):</strong> Open <code>docs/portfolio/storytelling-scripts.md</code> → Section "F4-B: Mock Interview Simulation Format". Run through all three practice question rounds (Craft, Influence &amp; Scale, Principal Depth) using the scoring rubric. Target: score 4+ on all Round 3 questions before the Band 9 panel. Pay particular attention to SD-7 (the Staff crux story) — practice delivering it in exactly 90 seconds: set a timer, no notes, record audio, play back and score yourself on the rubric.
     <div class="fp-block">
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">IBM playbook</span><span class="fp-path">~/Desktop/AI-Roadmap/appendix-g-portfolio-interview-readiness.html §8</span></div>
       <div class="fp-row fp-read"><em class="fp-icon">📖</em><span class="fp-label">Scripts A–D</span><span class="fp-path">~/Desktop/AI-Roadmap/appendix-g-portfolio-interview-readiness.html §5</span></div>
       <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">Portfolio</span><span class="fp-path">ai-platform-lab/README.md &nbsp; ai-platform-lab/ARCHITECTURE.md</span></div>
+      <div class="fp-row fp-ai"><em class="fp-icon">📄</em><span class="fp-label">F4-B — Mock interview</span><span class="fp-path">ai-platform-lab/docs/portfolio/storytelling-scripts.md (F4-B section — Round 1–3 practice questions + scoring rubric)</span></div>
     </div>
-    <div class="gate">✓ Gate: 2 IBM coffee chats booked. System design answer deliverable under 8 min. Resume updated with 3-sentence AI platform summary from Appendix G §6.</div>
+    <div class="gate">✓ Gate: 2 IBM coffee chats booked. System design answer deliverable under 8 min. Resume updated with 3-sentence AI platform summary from Appendix G §6. <strong>F4-B:</strong> All Round 3 mock interview questions scored 4+ on rubric. SD-7 crux story delivered in 90 seconds without notes — audio recorded as evidence.</div>
   </div>
 </div>
 
@@ -1513,10 +1530,14 @@ footer{margin-top:48px;padding-top:12px;border-top:1px solid var(--border);
   <strong>G4:</strong> <code>py-spy</code> flamegraph + Go pprof CPU profile committed to <code>docs/benchmarks/</code> ·
   <strong>G5 (DevSecOps):</strong> GHAS clean Security tab screenshot committed — Dependabot + CodeQL + secret scanning enabled ·
   <strong>G6 (IBM SRE/SA):</strong> Ansible playbooks committed + <code>ansible-lint</code> green in CI ·
-  <strong>G7 (Sr SA):</strong> ADR-016 + <code>terraform/backends/cloud/eks-ephemeral.tf</code> committed
+  <strong>G7 (Sr SA):</strong> ADR-016 + <code>terraform/backends/cloud/eks-ephemeral.tf</code> committed ·
+  <strong>F1 (FDE Craft):</strong> <code>go test ./internal/httpclient/... -v -race</code> — 9/9 PASS; decorrelated jitter explained verbally ·
+  <strong>F2 (FDE Craft):</strong> <code>go test ./internal/webhook/... -v -race</code> — 8/8 PASS; idempotency inversion decision explained verbally ·
+  <strong>F3 (FDE Craft):</strong> <code>go test ./platform/mcp-server/... -v -race</code> — 11/11 PASS; custom MCP server deployed to kind; promote guard explained verbally ·
+  <strong>F4 (FDE Career):</strong> SD-6-A through SD-6-F stories all under 90 sec timed; SD-7 crux story 90 sec recorded; all Round 3 mock interview questions scored 4+ on rubric
 </div>
 
-<footer><p>Made with IBM Bob · Includes the Zero-Trust Hardening Sprint (ADR-008–016) · All 7 role-coverage gaps (G1–G7) sequenced into Month 5 (G3), Month 11 (G1), and P16–18 (G2/G4/G5/G6/G7) · FDE / Sr AI Platform Eng / Sr SA / Sr SRE / Sr DevSecOps</p></footer>
+<footer><p>Made with IBM Bob · Includes the Zero-Trust Hardening Sprint (ADR-008–016) · All 7 role-coverage gaps (G1–G7) sequenced · F1–F4 FDE Coding &amp; Career Modules sequenced into Month 5 (F1), Month 8 (F2), Month 11 (F3), Month 14–16 (F4) · FDE / Sr AI Platform Eng / Sr SA / Sr SRE / Sr DevSecOps</p></footer>
 </div>
 </body>
 </html>
