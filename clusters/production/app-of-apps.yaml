@@ -47,7 +47,7 @@ spec:
   project: production   # Restricted AppProject — see below
 
   source:
-    repoURL: https://github.com/YOUR_ORG/ai-platform-lab   # update to actual org
+    repoURL: YOUR_ACTUAL_REPO_URL   # update to actual org
     targetRevision: main
     path: clusters/production/apps
 
@@ -103,7 +103,7 @@ spec:
 
   # Allowed source repositories (only the official org repo)
   sourceRepos:
-    - "https://github.com/YOUR_ORG/ai-platform-lab"
+    - "YOUR_ACTUAL_REPO_URL"
 
   # Allowed destination clusters and namespaces
   destinations:

@@ -19,7 +19,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/YOUR_ORG/ai-platform-lab
+    repoURL: https://github.com/himanshu8693/ai-platform-lab
     targetRevision: HEAD
     path: clusters/local-kind/apps
   destination:
