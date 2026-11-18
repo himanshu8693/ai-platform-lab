@@ -179,6 +179,11 @@ ai-platform-lab/
 
 ---
 
-## Curriculum
+## Role-relevant evidence
 
-The 12-month curriculum that built this lab is documented in `docs/curriculum/`. See the [Master Transition Blueprint](docs/curriculum/master_transition_blueprint.md) for the full career pivot plan.
+- **Platform / DevOps:** Kubernetes manifests, Terraform, Argo CD and CI workflows.
+- **SRE:** observability configuration, operational runbooks, and postmortem examples.
+- **Solutions Architect / Solutions Engineer:** architecture decision records and deployment tradeoffs.
+- **FDE:** customer scenario documents and constrained-environment design examples.
+
+Use the linked implementation and validation artifacts to distinguish completed work from simulations and design proposals.
