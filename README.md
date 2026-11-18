@@ -9,7 +9,6 @@ A portfolio reference implementation exploring secure AI inference infrastructur
 
 This repository combines local-lab components with simulations and design documentation. GPU/DCGM telemetry is mocked and the Apple Silicon MPS approach is a simulation; this is not evidence of a production GPU deployment. Cloud and production topologies are architectural examples unless explicitly identified as implemented and validated. Check the individual runbooks and test results before relying on a component.
 
-**Recruiter portfolio:** [Profile overview](docs/portfolio/README.md) · Static website source: `docs/portfolio/site/` (GitHub Pages workflow is ready; enable Pages in repository settings to publish it).
 
 ---
 
