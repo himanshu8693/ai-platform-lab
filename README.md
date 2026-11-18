@@ -1,9 +1,15 @@
 # AI Platform Lab
 
-A production-grade GPU inference platform built on Kubernetes, demonstrating the full AI infrastructure stack: operator development, zero-trust security, GitOps delivery, and SLO-backed observability.
+A portfolio reference implementation exploring secure AI inference infrastructure on Kubernetes, including GitOps delivery, an operator pattern, secrets integration, policy controls, and observability.
 
-> **Portfolio project** — Himanshu Sharma · IBM Band 8 → Senior AI Infrastructure Engineer  
-> CKA · CKS · HashiCorp Vault Associate · RHCSA
+> **Portfolio lab** — Himanshu Sharma  
+> Intended for technical discussion across Platform Engineering, DevOps, SRE, Solutions Architecture, Solutions Engineering, and FDE roles.
+
+## Scope and validation
+
+This repository combines local-lab components with simulations and design documentation. GPU/DCGM telemetry is mocked and the Apple Silicon MPS approach is a simulation; this is not evidence of a production GPU deployment. Cloud and production topologies are architectural examples unless explicitly identified as implemented and validated. Check the individual runbooks and test results before relying on a component.
+
+**Recruiter portfolio:** [Himanshu Sharma — Cloud & Platform Engineering](https://himanshu8693.github.io/ai-platform-lab/)
 
 ---
 
